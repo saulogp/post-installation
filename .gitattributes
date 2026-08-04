@@ -1,0 +1,12 @@
+# Scripts shell precisam obrigatoriamente de quebra de linha LF: com CRLF o
+# Linux falha logo no shebang ("bad interpreter: /usr/bin/env bash^M").
+# Este repositório é editado no Windows, onde core.autocrlf costuma estar
+# ativo, então a regra é fixada aqui em vez de depender da configuração local.
+*.sh text eol=lf
+
+# Demais arquivos de texto: normalizados no repositório, nativos no disco.
+*.md   text
+*.yml  text
+*.yaml text
+*.json text
+LICENSE text
