@@ -7,6 +7,8 @@ Instaladores de pós-instalação para Ubuntu LTS (22.04 e 24.04), organizados e
 |---|---|
 | [`devkit.sh`](devkit.sh) | **DevKit** — ambiente de desenvolvimento: Git, Docker, Kubernetes, .NET, NodeJS |
 | [`utilitieskit.sh`](utilitieskit.sh) | **UtilitiesKit** — aplicativos de uso diário: navegadores, escritório, multimídia, manutenção |
+| [`aikit.sh`](aikit.sh) | **AIKit** — ambiente para Inteligência Artificial local: OpenCode, Ollama via Docker, Open WebUI via Docker |
+| [`gamekit.sh`](gamekit.sh) | **GameKit** — preparação para jogos em Ubuntu: Steam, Lutris, Wine, Vulkan, NVIDIA, Proton |
 | [`lib/kit-common.sh`](lib/kit-common.sh) | Motor compartilhado pelos kits (não é executável por conta própria) |
 | [`tests/run-tests.sh`](tests/run-tests.sh) | Suíte de testes do motor |
 | [`post-installation.sh`](post-installation.sh) | Script original de pós-formatação: pacotes `.deb`, Flatpaks de desktop e configurações extras |
@@ -98,6 +100,53 @@ O menu inicial de qualquer kit:
 
 Ordem de preferência das origens: **repositório oficial → `.deb` do fabricante →
 Flatpak**. O Flatpak só é instalado se algum aplicativo realmente precisar dele.
+
+---
+
+## AIKit — `aikit.sh`
+
+Ambiente de Inteligência Artificial local. Log em `~/aikit/aikit-install.log`.
+
+2 componentes principais:
+
+| id | Aplicativo | Descrição |
+|---|---|---|
+| `opencode` | OpenCode | Instalação oficial via npm ou binário do GitHub; verificação de versão |
+| `ollama` | Ollama via Docker | Container `aikit-ollama` com persistência em `~/aikit/ollama/models/`; suporte opcional a GPU NVIDIA |
+| `openwebui` | Open WebUI via Docker | Container `aikit-open-webui` com persistência em `~/aikit/open-webui/`; integração com Ollama pela rede Docker `aikit-network` |
+
+Ordem de preferência de origem:
+1. Docker (imagem oficial `ollama/ollama:latest` e `ghcr.io/openwebui/openwebui:latest`)
+2. Não aplicável (são containers)
+
+---
+
+## GameKit — `gamekit.sh`
+
+Preparação para jogos em Ubuntu. Log em `~/gamekit/gamekit-install.log`.
+
+21 componentes divididos por categoria:
+
+| id | Aplicativo | Categoria | Observação |
+|---|---|---|---|
+| `nvidia` | Driver NVIDIA | Hardware | Via `ubuntu-drivers`; não instala `.run` da NVIDIA |
+| `vulkan` | Vulkan | Gráficas | `vulkan-tools` + validação com `vulkaninfo` |
+| `32-bit` | Arquitetura i386 | Compatibilidade | `dpkg --add-architecture i386` |
+| `steam` | Steam | Lojas | Repositório oficial do Ubuntu |
+| `proton` | Steam Play (Proton) | Steam | Configuração para jogos Windows |
+| `lutris` | Lutris | Emulação | PPA `lutris/lutris` |
+| `wine` | Wine | Wine | Wine Stable da WineHQ |
+| `winetricks` | Winetricks | Wine | Sem instalação automática de vcrun/dotnet/directx/corefonts |
+| `dxvk` | DXVK | DXVK | Gerenciado automaticamente pelo Proton/Lutris |
+| `vkd3d` | VKD3D / DirectX 12 | DirectX 12 | Gerenciado automaticamente pelo Proton/Lutris |
+| `gamemode` | GameMode | Otimização | `gamemode` pacote oficial |
+| `mangohud` | MangoHUD | Monitoramento | `mangohud` pacote oficial; overlay via linha de comando |
+| `controllers` | Controladores | Controladores | Suporte USB/Bluetooth plug-and-play |
+| `system_diagnostics` | Diagnóstico de Sistema | Ferramentas | `vulkaninfo`, `nvidia-smi`, `inxi`, etc. |
+
+---
+
+Ordem de preferência das origens: **repositório oficial → APT → Flatpak**. O Flatpak só é instalado se algum aplicativo realmente precisar dele.
 
 ---
 
