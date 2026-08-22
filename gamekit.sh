@@ -91,8 +91,9 @@ check_os() {
     if [ -f /etc/os-release ]; then
         . /etc/os-release
         UBUNTU_VERSION=${VERSION_ID%%.*}
+        UBUNTU_CODENAME=${VERSION_CODENAME:-}
         if [[ "$ID" == "ubuntu" ]] && { [[ "$UBUNTU_VERSION" -ge 22 ]] || [[ "$UBUNTU_VERSION" -ge 24 ]]; }; then
-            msg_info "Sistema operacional verificado: Ubuntu ${VERSION_ID}"
+            msg_info "Sistema operacional verificado: Ubuntu ${VERSION_ID} (${UBUNTU_CODENAME})"
             return 0
         fi
     fi
@@ -406,13 +407,14 @@ install_steam() {
         return 0
     fi
     
-    # Verificar se steamdeck repo já está configurado
+    # Verificar se repositório Steam já está configurado
     if [ -f /etc/apt/sources.list.d/steam.list ]; then
         msg_info "Repositório Steam já configurado."
     else
         msg_info "Adicionando repositório oficial do Steam..."
-        if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y steamwise 2>/dev/null; then
-            msg_ok "Repositório Steam configurado."
+        if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y steam 2>/dev/null; then
+            msg_ok "Steam instalado via repositório."
+            STEAM_INSTALLED=1
         else
             # Tentar método alternativo - baixar .deb
             msg_info "Tentando método alternativo para Steam..."
@@ -424,7 +426,7 @@ install_steam() {
             fi
             local tmp_dir
             tmp_dir=$(mktemp -d)
-            if curl -sL "https://cdn steamstatic.com/installer/steam.deb" -o "${tmp_dir}/steam.deb" 2>/dev/null; then
+            if curl -sL "https://cdn.steamstatic.com/installer/steam.deb" -o "${tmp_dir}/steam.deb" 2>/dev/null; then
                 if sudo dpkg -i "${tmp_dir}/steam.deb" >/dev/null 2>&1; then
                     msg_ok "Steam instalado via .deb."
                     STEAM_INSTALLED=1
@@ -479,7 +481,7 @@ configure_proton() {
             libasound2:i386 \
             libfreetype6:i386 \
             libcurl4-openssl-dev:i386 \
-            libssl1.1:i386 2>/dev/null; then
+            libssl3:i386 2>/dev/null; then
             msg_ok "Bibliotecas 32-bit para Proton instaladas."
         else
             msg_warn "Não foi possível instalar todas as bibliotecas 32-bit."
@@ -514,40 +516,59 @@ install_lutris() {
     
     msg_info "Instalando Lutris via repositório oficial..."
     
-    # Adicionar repositório Lutris
-    if sudo env DEBIAN_FRONTEND=noninteractive apt-add-repository -y ppa:lutris/lutris 2>/dev/null; then
-        msg_ok "Repositório Lutris adicionado."
+    # Adicionar repositório Lutris (compatível com Ubuntu 22.04 e 24.04)
+    local lutris_ppa="ppa:lutris/lutris"
+    if [ "${UBUNTU_VERSION:-}" = "24.04" ]; then
+        # Ubuntu 24.04 (noble) pode não ter PPA atualizado, usar Flatpak como alternativa preferida
+        msg_info "Ubuntu 24.04 detectado: usando Flatpak para Lutris (PPA pode não ter build para noble)."
     else
-        msg_warn "Não foi possível adicionar repositório Lutris."
+        if sudo env DEBIAN_FRONTEND=noninteractive apt-add-repository -y "$lutris_ppa" 2>/dev/null; then
+            msg_ok "Repositório Lutris adicionado."
+        else
+            msg_warn "Não foi possível adicionar repositório Lutris."
+        fi
+    fi
+
+    # Tentar instalação via APT primeiro (se PPA foi adicionado)
+    if [ -f /etc/apt/sources.list.d/lutris-ubuntu-lutris-*.list ]; then
+        apt_update
+        if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y lutris 2>/dev/null; then
+            msg_ok "Lutris instalado via APT."
+            LUTRIS_INSTALLED=1
+        else
+            msg_warn "Falha ao instalar Lutris via APT."
+        fi
+    fi
+
+    # Fallback: Flatpak (funciona em ambas versões)
+    if [ ${LUTRIS_INSTALLED} -eq 0 ]; then
         msg_info "Tentando instalação via Flatpak..."
+        if ! command -v flatpak >/dev/null 2>&1; then
+            msg_info "Instalando Flatpak..."
+            sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y flatpak 2>/dev/null
+        fi
         if command -v flatpak >/dev/null 2>&1; then
-            flatpak install flathub org.lutris Lutris 2>/dev/null
-            if command -v lutris >/dev/null 2>&1; then
+            flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null
+            flatpak install -y flathub org.lutris.Lutris 2>/dev/null
+            if flatpak list --columns=application | grep -q "org.lutris.Lutris" 2>/dev/null; then
                 LUTRIS_INSTALLED=1
                 msg_ok "Lutris instalado via Flatpak."
                 return 0
             fi
         fi
+        msg_error "Não foi possível instalar Lutris."
         return 1
     fi
     
-    # Atualizar e instalar
-    apt_update
-    
-    if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y lutris 2>/dev/null; then
-        msg_ok "Lutris instalado com sucesso."
-        LUTRIS_INSTALLED=1
-        
-        # Configurar Wine básico para Lutris
+    # Configurar Wine básico para Lutris se instalado
+    if [ ${LUTRIS_INSTALLED} -eq 1 ]; then
         msg_info "Configurando suporte Wine básico para Lutris..."
         if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y wine64 winetricks 2>/dev/null; then
             msg_ok "Wine e Winetricks instalados para Lutris."
         fi
-        return 0
-    else
-        msg_error "Falha ao instalar Lutris."
-        return 1
     fi
+    
+    return 0
 }
 
 #===============================================================================
@@ -580,7 +601,7 @@ install_wine() {
     if [ ! -f /etc/apt/sources.list.d/winehq.list ]; then
         msg_info "Adicionando repositório WineHQ..."
         sudo wget -NP /etc/apt/trusted.gpg.d/ https://winehq.org/keys/winehq.key 2>/dev/null
-        echo "deb https://winehq.org/Ubuntu focal main" | sudo tee /etc/apt/sources.list.d/winehq.list >/dev/null 2>&1
+        echo "deb https://winehq.org/Ubuntu ${UBUNTU_CODENAME} main" | sudo tee /etc/apt/sources.list.d/winehq.list >/dev/null 2>&1
     fi
     
     apt_update
