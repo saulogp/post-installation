@@ -242,6 +242,20 @@ install_telegram() {
     flatpak_install 'org.telegram.desktop' 'Telegram Desktop'
 }
 
+#--------------------------------------------------------- gerenciador de senhas
+install_keepassxc() {
+    apt_update
+    if apt_first_available keepassxc >/dev/null 2>&1; then
+        run_step 'Instalando KeePassXC' sudo env DEBIAN_FRONTEND=noninteractive \
+            apt-get install -y keepassxc && return 0
+        msg_warn 'Instalação via APT falhou; tentando Flatpak.'
+    else
+        msg_info 'Pacote do Ubuntu indisponível; tentando Flatpak.'
+    fi
+
+    flatpak_install 'org.keepassxc.KeePassXC' 'KeePassXC'
+}
+
 #----------------------------------------------------------------- extras
 
 install_obs() {
@@ -305,6 +319,8 @@ register_component firefox      'Firefox'            'Navegadores'   install_fir
      register_component telegram     'Telegram Desktop'   'Comunicação'   install_telegram     telegram-desktop     'telegram-desktop --version' 'amd64 arm64' 'command -v telegram-desktop || flatpak info org.telegram.desktop'
 
      register_component obs          'OBS Studio'         'Extras'        install_obs          obs                  'obs --version'              'amd64 arm64' 'command -v obs || flatpak info com.obsproject.Studio'
+
+     register_component keepassxc   'KeePassXC'          'Segurança'     install_keepassxc    keepassxc            'keepassxc --version'        'amd64 arm64' 'command -v keepassxc'
 }
 
 kit_main "$@"
