@@ -40,7 +40,7 @@ readonly KIT_VERSION='1.0.0'
 readonly KIT_LOG_DEFAULT="${HOME}/utilities-install.log"
 readonly KIT_DESCRIPTION='Instala os principais aplicativos utilitários para uso diário,
 priorizando os repositórios oficiais de cada fabricante e evitando o Snap.'
-readonly KIT_AUTO_NOTE='Os componentes com escolha (LibreOffice, PDF, captura) assumem a primeira opção.'
+readonly KIT_AUTO_NOTE='Os componentes com escolha (LibreOffice, captura) assumem a primeira opção.'
 
 _kit_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly KIT_LIB="${_kit_dir}/lib/kit-common.sh"
@@ -184,31 +184,6 @@ install_tweaks()    { apt_install_step 'GNOME Tweaks' gnome-tweaks; }
 install_bleachbit() { apt_install_step 'BleachBit'    bleachbit;    }
 install_timeshift() { apt_install_step 'Timeshift'    timeshift;    }
 
-install_stacer() {
-    apt_update
-
-    local pacote
-    if pacote=$(apt_first_available stacer); then
-        msg_info "Stacer disponível no repositório do Ubuntu (${pacote})."
-        run_step 'Instalando Stacer' sudo env DEBIAN_FRONTEND=noninteractive \
-            apt-get install -y "$pacote" && return 0
-        msg_warn 'Instalação via APT falhou; tentando a release publicada pelo projeto.'
-    else
-        msg_info 'Stacer não está nos repositórios desta versão do Ubuntu; buscando a release do projeto.'
-    fi
-
-    local url
-    url=$(github_latest_asset 'oguzhaninan/Stacer' "_${ARCH_DEB}\.deb$")
-    [[ -n $url ]] || url=$(github_latest_asset 'oguzhaninan/Stacer' "\.deb$")
-
-    if [[ -z $url ]]; then
-        skip_component 'sem pacote disponível para esta versão do Ubuntu (projeto sem releases recentes)'
-        return 0
-    fi
-
-    install_deb_from_url "$url"
-}
-
 #-------------------------------------------------------------------- compactação
 install_7zip() {
     # O nome do pacote mudou entre as LTS: o 24.04 traz o porte oficial '7zip',
@@ -224,70 +199,18 @@ install_7zip() {
     msg_info "Pacote selecionado: ${pacote}"
     run_step "Instalando ${pacote}" sudo env DEBIAN_FRONTEND=noninteractive \
         apt-get install -y "$pacote"
+run_step "Instalando ${pacote}" sudo env DEBIAN_FRONTEND=noninteractive \
+         apt-get install -y "$pacote"
 }
 
-install_unrar() {
-    apt_update
 
-    local pacote
-    if ! pacote=$(apt_first_available unrar); then
-        # O 'unrar' vive no componente multiverse, que nem sempre vem habilitado.
-        msg_info 'Pacote unrar indisponível; habilitando o componente multiverse.'
-        ensure_apt_component multiverse
 
-        if ! pacote=$(apt_first_available unrar unrar-free); then
-            skip_component 'nenhum pacote unrar disponível nos repositórios'
-            return 0
-        fi
-    fi
 
-    msg_info "Pacote selecionado: ${pacote}"
-    run_step "Instalando ${pacote}" sudo env DEBIAN_FRONTEND=noninteractive \
-        apt-get install -y "$pacote"
-}
-
-install_zip() { apt_install_step 'Zip e Unzip' zip unzip; }
-
-#--------------------------------------------------------------- leitores de PDF
-install_pdf() {
-    local escolha
-    escolha=$(ask_choice 'Qual leitor de PDF deseja instalar?' \
-        'Evince — leve, padrão do GNOME' \
-        'Okular — completo, do KDE' \
-        'Ambos') \
-        || { skip_component 'seleção cancelada'; return 0; }
-
-    local -a pacotes=()
-    case "$escolha" in
-        1) pacotes=(evince) ;;
-        2) pacotes=(okular) ;;
-        3) pacotes=(evince okular) ;;
-    esac
-
-    apt_update
-    run_step "Instalando ${pacotes[*]}" sudo env DEBIAN_FRONTEND=noninteractive \
-        apt-get install -y "${pacotes[@]}"
-}
 
 #------------------------------------------------------------- captura de tela
 install_screenshot() {
-    local escolha
-    escolha=$(ask_choice 'Qual ferramenta de captura de tela deseja instalar?' \
-        'Flameshot — anotações rápidas' \
-        'Ksnip — mais recursos de edição' \
-        'Ambas') \
-        || { skip_component 'seleção cancelada'; return 0; }
-
-    local -a pacotes=()
-    case "$escolha" in
-        1) pacotes=(flameshot) ;;
-        2) pacotes=(ksnip) ;;
-        3) pacotes=(flameshot ksnip) ;;
-    esac
-
-    apt_update
-    run_step "Instalando ${pacotes[*]}" sudo env DEBIAN_FRONTEND=noninteractive \
-        apt-get install -y "${pacotes[@]}"
+    run_step 'Instalando Flameshot' sudo env DEBIAN_FRONTEND=noninteractive \
+        apt-get install -y flameshot
 }
 
 #-------------------------------------------------------------------- comunicação
@@ -320,14 +243,6 @@ install_telegram() {
 }
 
 #----------------------------------------------------------------- extras
-install_filezilla() { apt_install_step 'FileZilla' filezilla; }
-
-install_remmina() {
-    apt_update
-    run_step 'Instalando Remmina e plugins (RDP e VNC)' \
-        sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        remmina remmina-plugin-rdp remmina-plugin-vnc
-}
 
 install_obs() {
     # O projeto OBS recomenda oficialmente o PPA para Ubuntu, que costuma trazer
@@ -366,36 +281,30 @@ install_obs() {
 
 register_components() {
     #                  id            nome                 grupo           função               binário              versão                       arquiteturas   teste de presença
-    register_component firefox      'Firefox'            'Navegadores'   install_firefox      firefox              'firefox --version'          'amd64 arm64'
-    register_component chrome       'Google Chrome'      'Navegadores'   install_chrome       google-chrome-stable 'google-chrome-stable --version' 'amd64'
-    register_component brave        'Brave Browser'      'Navegadores'   install_brave        brave-browser        'brave-browser --version'    'amd64 arm64'
+register_component firefox      'Firefox'            'Navegadores'   install_firefox      firefox              'firefox --version'          'amd64 arm64'
+     register_component chrome       'Google Chrome'      'Navegadores'   install_chrome       google-chrome-stable 'google-chrome-stable --version' 'amd64'
+     register_component brave        'Brave Browser'      'Navegadores'   install_brave        brave-browser        'brave-browser --version'    'amd64 arm64'
 
-    register_component libreoffice  'LibreOffice'        'Escritório'    install_libreoffice  libreoffice          'libreoffice --version'      'amd64 arm64'
+     register_component libreoffice  'LibreOffice'        'Escritório'    install_libreoffice  libreoffice          'libreoffice --version'      'amd64 arm64'
 
-    register_component qbittorrent  'qBittorrent'        'Download'      install_qbittorrent  qbittorrent          'qbittorrent --version'      'amd64 arm64'
+     register_component qbittorrent  'qBittorrent'        'Download'      install_qbittorrent  qbittorrent          'qbittorrent --version'      'amd64 arm64'
 
-    register_component vlc          'VLC'                'Multimídia'    install_vlc          vlc                  'vlc --version'              'amd64 arm64'
+     register_component vlc          'VLC'                'Multimídia'    install_vlc          vlc                  'vlc --version'              'amd64 arm64'
 
-    register_component gparted      'GParted'            'Sistema'       install_gparted      gparted              'gparted --version'          'amd64 arm64'
-    register_component tweaks       'GNOME Tweaks'       'Sistema'       install_tweaks       gnome-tweaks         'gnome-tweaks --version'     'amd64 arm64'
-    register_component bleachbit    'BleachBit'          'Sistema'       install_bleachbit    bleachbit            'bleachbit --version'        'amd64 arm64'
-    register_component timeshift    'Timeshift'          'Sistema'       install_timeshift    timeshift            'timeshift --version'        'amd64 arm64'
-    register_component stacer       'Stacer'             'Sistema'       install_stacer       stacer               'stacer --version'           'amd64 arm64'
+     register_component gparted      'GParted'            'Sistema'       install_gparted      gparted              'gparted --version'          'amd64 arm64'
+     register_component tweaks       'GNOME Tweaks'       'Sistema'       install_tweaks       gnome-tweaks         'gnome-tweaks --version'     'amd64 arm64'
+     register_component bleachbit    'BleachBit'          'Sistema'       install_bleachbit    bleachbit            'bleachbit --version'        'amd64 arm64'
+     register_component timeshift    'Timeshift'          'Sistema'       install_timeshift    timeshift            'timeshift --version'        'amd64 arm64'
+     register_component stacer       'Stacer'             'Sistema'       install_stacer       stacer               'stacer --version'           'amd64 arm64'
 
-    register_component 7zip         '7-Zip'              'Compactação'   install_7zip         7z                   '7z i'                       'amd64 arm64' 'command -v 7z || command -v 7zz'
-    register_component unrar        'Unrar'              'Compactação'   install_unrar        unrar                'unrar -inul'                'amd64 arm64' 'command -v unrar || command -v unrar-free'
-    register_component zip          'Zip e Unzip'        'Compactação'   install_zip          zip                  'zip --version'              'amd64 arm64' 'command -v zip && command -v unzip'
+     register_component 7zip         '7-Zip'              'Compactação'   install_7zip         7z                   '7z i'                       'amd64 arm64' 'command -v 7z || command -v 7zz'
 
-    register_component pdf          'Leitor de PDF'      'Documentos'    install_pdf          evince               'evince --version'           'amd64 arm64' 'command -v evince || command -v okular'
+     register_component screenshot   'Captura de tela'    'Captura'       install_screenshot   flameshot            'flameshot --version'        'amd64 arm64' 'command -v flameshot'
 
-    register_component screenshot   'Captura de tela'    'Captura'       install_screenshot   flameshot            'flameshot --version'        'amd64 arm64' 'command -v flameshot || command -v ksnip'
+     register_component discord      'Discord'            'Comunicação'   install_discord      discord              'discord --version'          'amd64'       'command -v discord || flatpak info com.discordapp.Discord'
+     register_component telegram     'Telegram Desktop'   'Comunicação'   install_telegram     telegram-desktop     'telegram-desktop --version' 'amd64 arm64' 'command -v telegram-desktop || flatpak info org.telegram.desktop'
 
-    register_component discord      'Discord'            'Comunicação'   install_discord      discord              'discord --version'          'amd64'       'command -v discord || flatpak info com.discordapp.Discord'
-    register_component telegram     'Telegram Desktop'   'Comunicação'   install_telegram     telegram-desktop     'telegram-desktop --version' 'amd64 arm64' 'command -v telegram-desktop || flatpak info org.telegram.desktop'
-
-    register_component filezilla    'FileZilla'          'Extras'        install_filezilla    filezilla            'filezilla --version'        'amd64 arm64'
-    register_component remmina      'Remmina'            'Extras'        install_remmina      remmina              'remmina --version'          'amd64 arm64'
-    register_component obs          'OBS Studio'         'Extras'        install_obs          obs                  'obs --version'              'amd64 arm64' 'command -v obs || flatpak info com.obsproject.Studio'
+     register_component obs          'OBS Studio'         'Extras'        install_obs          obs                  'obs --version'              'amd64 arm64' 'command -v obs || flatpak info com.obsproject.Studio'
 }
 
 kit_main "$@"

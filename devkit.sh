@@ -165,6 +165,7 @@ setup_docker_repo() {
 
 install_docker() {
     setup_docker_repo || return 1
+    apt_update || return 1
 
     run_step 'Instalando Docker Engine e plugins' \
         sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
@@ -201,7 +202,7 @@ install_compose() {
         return 0
     fi
 
-    if setup_docker_repo && run_step 'Instalando docker-compose-plugin' \
+    if setup_docker_repo && apt_update && run_step 'Instalando docker-compose-plugin' \
             sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y docker-compose-plugin; then
         docker compose version >/dev/null 2>&1 && return 0
     fi
