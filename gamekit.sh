@@ -17,1443 +17,1215 @@
 #
 #===============================================================================
 
+# Strict mode - mas tratamos erros por componente para não parar tudo
+set -uo pipefail
+IFS=$'\n\t'
+
 #===============================================================================
 # SEÇÃO 1 — Identidade do script e configurações globais
 #===============================================================================
 
-# Configurações de identidade
 readonly KIT_ID='gamekit'
 readonly KIT_NAME='Ubuntu GameKit Installer'
 readonly KIT_VERSION='1.0.0'
 readonly KIT_LOG_DEFAULT="${HOME}/gamekit/gamekit-install.log"
-readonly KIT_DESCRIPTION='Prepara um ambiente de jogos em Ubuntu com NVIDIA, Steam,'
-readonly KIT_DESCRIPTION+=' Lutris, Wine, Vulkan e herramientas associadas.'
+readonly KIT_DESCRIPTION='Prepara um ambiente de jogos em Ubuntu com NVIDIA, Steam, Lutris, Wine, Vulkan e ferramentas associadas.'
 readonly KIT_AUTO_NOTA='As escolhas de componentes são salvas por sessão.'
 
-# Cores ANSI para mensagens
-COLOR_RESET='\033[0m'
-COLOR_BOLD='\033[1m'
-COLOR_GREEN='\033[0;32m'
-COLOR_RED='\033[0;31m'
-COLOR_YELLOW='\033[0;33m'
-COLOR_BLUE='\033[0;34m'
-COLOR_MAGENTA='\033[0;35m'
-COLOR_CYAN='\033[0;36m'
+# Cores ANSI - respeita NO_COLOR
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+    readonly COLOR_RESET='\033[0m'
+    readonly COLOR_BOLD='\033[1m'
+    readonly COLOR_GREEN='\033[0;32m'
+    readonly COLOR_RED='\033[0;31m'
+    readonly COLOR_YELLOW='\033[0;33m'
+    readonly COLOR_BLUE='\033[0;34m'
+    readonly COLOR_MAGENTA='\033[0;35m'
+    readonly COLOR_CYAN='\033[0;36m'
+else
+    readonly COLOR_RESET=''
+    readonly COLOR_BOLD=''
+    readonly COLOR_GREEN=''
+    readonly COLOR_RED=''
+    readonly COLOR_YELLOW=''
+    readonly COLOR_BLUE=''
+    readonly COLOR_MAGENTA=''
+    readonly COLOR_CYAN=''
+fi
 
-# Diretórios do GameKit
+# Diretórios
 readonly GAMEKIT_DIR="${HOME}/gamekit"
 readonly LOG_FILE="${GAMEKIT_DIR}/gamekit-install.log"
-STEAM_DIR="${HOME}/.steam/l"
-WINE_DIR="${HOME}/.wine"
-LUTRIS_DIR="${HOME}/.local/share/lutris"
+readonly STEAM_DIR="${HOME}/.steam/l"
+readonly WINE_DIR="${HOME}/.wine"
+readonly LUTRIS_DIR="${HOME}/.local/share/lutris"
 
-# Variáveis de estado
-GPU_NVIDIA=0
-DRIVER_NVIDIA=0
-VULKAN_SUPPORT=0
-THIRTYTWO_BIT=0
-STEAM_INSTALLED=0
-LUTRIS_INSTALLED=0
-WINE_INSTALLED=0
-GAMEMODE_INSTALLED=0
-MANGOHUD_INSTALLED=0
-ERRORS=0
-SKIPPED=0
+# Variáveis de estado - exportadas para subshells
+export GPU_NVIDIA=0
+export DRIVER_NVIDIA=0
+export VULKAN_SUPPORT=0
+export THIRTYTWO_BIT=0
+export STEAM_INSTALLED=0
+export LUTRIS_INSTALLED=0
+export WINE_INSTALLED=0
+export WINETRICKS_INSTALLED=0
+export GAMEMODE_INSTALLED=0
+export MANGOHUD_INSTALLED=0
+export ERRORS=0
+export SKIPPED=0
 
-# Arquetipos de componentes
-INSTALL_NVIDIA=0
-INSTALL_VULKAN=0
-INSTALL_STEAM=0
-INSTALL_LUTRIS=0
-INSTALL_WINE=0
-INSTALL_WINETRICKS=0
-INSTALL_GAMEMODE=0
-INSTALL_MANGOHUD=0
+# Info do sistema - populada por check_os
+export UBUNTU_VERSION=""
+export UBUNTU_CODENAME=""
+export UBUNTU_ID=""
 
 #===============================================================================
-# SEÇÃO 2 — Funções de verificação e helpers
+# SEÇÃO 2 — Logging e Helpers
 #===============================================================================
 
-# Função: log_message
-# Descrição: Registra mensagens no log
+# Garante diretório de log
+mkdir -p "$(dirname "${LOG_FILE}")" 2>/dev/null || true
+
 log_message() {
     local level="$1"
     local message="$2"
     local timestamp
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    mkdir -p "$(dirname "${LOG_FILE}")"
-    echo "[$timestamp] [${level}] ${message}" >> "${LOG_FILE}" 2>/dev/null
+    echo "[$timestamp] [${level}] ${message}" >> "${LOG_FILE}" 2>/dev/null || true
 }
 
-# Função: check_os
-# Descrição: Verifica se o sistema operacional é Ubuntu compatível
-check_os() {
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        UBUNTU_VERSION=${VERSION_ID%%.*}
-        UBUNTU_CODENAME=${VERSION_CODENAME:-}
-        if [[ "$ID" == "ubuntu" ]] && { [[ "$UBUNTU_VERSION" -ge 22 ]] || [[ "$UBUNTU_VERSION" -ge 24 ]]; }; then
-            msg_info "Sistema operacional verificado: Ubuntu ${VERSION_ID} (${UBUNTU_CODENAME})"
-            return 0
-        fi
+# Executa comando logando stdout/stderr no arquivo, mostra status na tela
+run_logged() {
+    local desc="$1"
+    shift
+    printf '  %s->%s %s ' "${COLOR_BLUE}" "${COLOR_RESET}" "${desc}"
+    log_message "CMD" "${desc}: $*"
+    
+    local output rc
+    output=$("$@" 2>&1)
+    rc=$?
+    
+    # Log completo
+    local timestamp
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$timestamp] [CMD] $*" >> "${LOG_FILE}" 2>/dev/null || true
+    echo "$output" >> "${LOG_FILE}" 2>/dev/null || true
+    echo "[$timestamp] [RC] $rc" >> "${LOG_FILE}" 2>/dev/null || true
+    
+    if [[ $rc -eq 0 ]]; then
+        printf '%s[OK]%s\n' "${COLOR_GREEN}" "${COLOR_RESET}"
+    else
+        printf '%s[ERRO]%s (código %d)\n' "${COLOR_RED}" "${COLOR_RESET}" "$rc"
+        # Mostra últimas linhas do erro na tela
+        echo "$output" | tail -5 | sed 's/^/    /' >&2
     fi
-    msg_error "Este script requer Ubuntu 22.04 ou 24.04."
-    return 1
+    return $rc
 }
 
-# Função: check_sudo
-# Descrição: Verifica se o usuário tem permissões sudo
-check_sudo() {
-    if [ "$(id -u)" -eq 0 ]; then
-        msg_info "Executando como root."
-        return 0
-    fi
-    if command -v sudo >/dev/null 2>&1; then
-        if sudo -n true 2>/dev/null; then
-            return 0
-        fi
-    fi
-    msg_error "Sem permissões sudo. O script precisa de sudo para instalar pacotes."
-    return 1
+msg_info()  { printf '%s[INFO]%s  %s\n'  "${COLOR_BLUE}"   "${COLOR_RESET}" "$*"; log_message "INFO"  "$*"; }
+msg_ok()    { printf '%s[OK]%s    %s\n'  "${COLOR_GREEN}"  "${COLOR_RESET}" "$*"; log_message "OK"    "$*"; }
+msg_warn()  { printf '%s[AVISO]%s %s\n'  "${COLOR_YELLOW}" "${COLOR_RESET}" "$*"; log_message "AVISO" "$*"; SKIPPED=$((SKIPPED + 1)); }
+msg_error() { printf '%s[ERRO]%s  %s\n'  "${COLOR_RED}"    "${COLOR_RESET}" "$*" >&2; log_message "ERRO"  "$*"; ERRORS=$((ERRORS + 1)); }
+
+banner() {
+    local titulo="$1"
+    printf '\n%s=========================================%s\n' "${COLOR_BOLD}" "${COLOR_RESET}"
+    printf '%s %s%s\n' "${COLOR_BOLD}" "$titulo" "${COLOR_RESET}"
+    printf '%s=========================================%s\n\n' "${COLOR_BOLD}" "${COLOR_RESET}"
+    log_message "BANNER" "$titulo"
 }
 
-# Função: check_internet
-# Descrição: Verifica conexão com a internet
-check_internet() {
-    if command -v ping >/dev/null 2>&1; then
-        if ping -c 1 -W 5 8.8.8.8 >/dev/null 2>&1; then
-            return 0
-        fi
-    fi
-    if command -v curl >/dev/null 2>&1; then
-        if curl --output /dev/null --silent --head --fail https://httpbin.org/get 2>/dev/null; then
-            return 0
-        fi
-    fi
-    msg_warn "Sem conexão com a internet detectada. Algumas instalações podem falhar."
-    return 1
-}
-
-# Função: detect_gpu
-# Descrição: Detecta GPU e configura variáveis de estado
-detect_gpu() {
-    if command -v nvidia-smi >/dev/null 2>&1; then
-        GPU_NVIDIA=1
-        GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader,nounits 2>/dev/null | tr -d ' ')
-        msg_ok "GPU NVIDIA detectada: ${GPU_NAME}."
-        
-        # Verificar versão do driver
-        DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits 2>/dev/null | tr -d ' ')
-        msg_info "Versão do driver NVIDIA: ${DRIVER_VERSION}."
-        DRIVER_NVIDIA=1
-        return 0
-    fi
-    GPU_NVIDIA=0
-    msg_info "GPU NVIDIA não detectada."
-    return 1
-}
-
-# Função: msg_info
-# Descrição: Mostra mensagem informacional
-msg_info() {
-    printf "${COLOR_BLUE}[INFO]${COLOR_RESET} %s\n" "$1"
-    log_message "INFO" "$1"
-}
-
-# Função: msg_ok
-# Descrição: Mostra mensagem de sucesso
-msg_ok() {
-    printf "${COLOR_GREEN}[OK]${COLOR_RESET} %s\n" "$1"
-    log_message "OK" "$1"
-}
-
-# Função: msg_warn
-# Descrição: Mostra mensagem de aviso
-msg_warn() {
-    printf "${COLOR_YELLOW}[AVISO]${COLOR_RESET} %s\n" "$1"
-    log_message "AVISO" "$1"
-    SKIPPED=$((SKIPPED + 1))
-}
-
-# Função: msg_error
-# Descrição: Mostra mensagem de erro
-msg_error() {
-    printf "${COLOR_RED}[ERRO]${COLOR_RESET} %s\n" "$1"
-    log_message "ERRO" "$1"
-    ERRORS=$((ERRORS + 1))
-}
-
-# Função: apt_update
-# Descrição: Atualiza lista de pacotes APT
-apt_update() {
-    if command -v apt-get >/dev/null 2>&1; then
-        sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq 2>/dev/null
-        return $?
-    fi
-    return 1
-}
-
-# Função: confirm_installation
-# Descrição: Pergunta ao usuário se deseja instalar um componente
+# Pergunta S/N com normalização
 confirm_installation() {
-    local component_name="$1"
-    local prompt_text="$2"
+    local prompt_text="$1"
+    local response
     
     while true; do
-        printf "${COLOR_CYAN}%s${COLOR_RESET}\n" "${prompt_text}"
-        printf "${COLOR_CYAN}[S] Sim${COLOR_RESET} ${COLOR_YELLOW}[N] Não${COLOR_RESET}\n"
-        printf ">${COLOR_RESET} "
-        read -r response
+        printf '%s%s%s\n' "${COLOR_CYAN}" "${prompt_text}" "${COLOR_RESET}"
+        printf '  %s[S]%s Sim\n' "${COLOR_GREEN}" "${COLOR_RESET}"
+        printf '  %s[N]%s Não\n\n' "${COLOR_RED}" "${COLOR_RESET}"
+        printf '> '
+        read -r response || response='n'
+        
+        # Normaliza: lowercase, remove acentos básicos
+        response=$(echo "$response" | tr '[:upper:]' '[:lower:]' | sed 's/ã/a/;s/á/a/;s/é/e/;s/ó/o/;s/ú/u/')
+        
         case "$response" in
-            [SsYy]* ) return 0;;
-            [Nn]* ) return 1;;
-            * ) printf "Por favor, responda S ou N.\n";;
+            s|sim|y|yes) return 0 ;;
+            n|nao|não|no) return 1 ;;
+            *) msg_warn "Opção inválida. Digite S ou N." ;;
         esac
     done
 }
 
-# Função: check_architecture
-# Descrição: Verifica arquitetura do sistema
-check_architecture() {
-    ARCH=$(uname -m)
-    msg_info "Arquitetura do sistema: ${ARCH}"
-    if [[ "${ARCH}" == "x86_64" ]]; then
-        msg_ok "Arquitetura de 64 bits confirmada."
-        return 0
+# Verifica se comando existe
+has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+#===============================================================================
+# SEÇÃO 3 — Verificações Preliminares
+#===============================================================================
+
+check_root() {
+    if [[ $EUID -eq 0 ]]; then
+        msg_error "Não execute este script como root nem com sudo."
+        msg_info "Configurações de usuário (HOME, grupos, perfis de shell) precisam do seu usuário real."
+        msg_info "O script pede sudo apenas onde é necessário."
+        msg_info "Execute assim: ./${0##*/}"
+        exit 1
     fi
-    msg_warn "Arquitetura incomum: ${ARCH}"
+}
+
+check_sudo() {
+    msg_info "Verificando permissões de sudo..."
+    if ! has_cmd sudo; then
+        msg_error "Comando 'sudo' não encontrado."
+        return 1
+    fi
+    if ! sudo -n true 2>/dev/null; then
+        # Tenta pedir senha uma vez
+        if ! sudo -v; then
+            msg_error "Sem permissões sudo válidas."
+            return 1
+        fi
+    fi
+    msg_ok "Permissões de sudo confirmadas."
+    
+    # Mantém ticket vivo
+    ( while true; do sudo -n true 2>/dev/null; sleep 60; kill -0 "$$" 2>/dev/null || exit 0; done ) &
+    SUDO_KEEPALIVE_PID=$!
+    return 0
+}
+
+check_os() {
+    msg_info "Detectando sistema operacional..."
+    
+    if [[ ! -r /etc/os-release ]]; then
+        msg_error "/etc/os-release não encontrado."
+        return 1
+    fi
+    
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    
+    UBUNTU_ID="${ID:-unknown}"
+    UBUNTU_VERSION="${VERSION_ID%%.*}"  # 22 ou 24
+    UBUNTU_CODENAME="${VERSION_CODENAME:-}"
+    
+    export UBUNTU_ID UBUNTU_VERSION UBUNTU_CODENAME
+    
+    if [[ "$UBUNTU_ID" != "ubuntu" ]]; then
+        if [[ "${ID_LIKE:-}" == *ubuntu* || "${ID_LIKE:-}" == *debian* ]]; then
+            msg_warn "Distribuição '$UBUNTU_ID' é derivada do Ubuntu, mas não foi testada."
+            confirm_installation "Deseja continuar mesmo assim?" || exit 0
+        else
+            msg_error "Distribuição '$UBUNTU_ID' não suportada. Use Ubuntu 22.04 ou 24.04."
+            return 1
+        fi
+    fi
+    
+    # Verifica versão suportada EXATAMENTE 22 ou 24
+    if [[ "$UBUNTU_VERSION" != "22" && "$UBUNTU_VERSION" != "24" ]]; then
+        msg_warn "Ubuntu $VERSION_ID não testado (suportados: 22.04, 24.04)."
+        confirm_installation "Deseja continuar mesmo assim?" || exit 0
+    fi
+    
+    if [[ -z "$UBUNTU_CODENAME" ]]; then
+        msg_error "Não foi possível determinar o codinome da distribuição."
+        return 1
+    fi
+    
+    msg_ok "Sistema: Ubuntu $VERSION_ID ($UBUNTU_CODENAME) - Arquitetura: $(dpkg --print-architecture)"
+    return 0
+}
+
+check_internet() {
+    msg_info "Verificando conexão com a Internet..."
+    
+    # Tenta HTTPS primeiro (mais confiável que ping)
+    local targets=(
+        "https://connectivitycheck.gstatic.com/generate_204"
+        "https://archive.ubuntu.com"
+        "https://github.com"
+    )
+    
+    for target in "${targets[@]}"; do
+        if curl -fsS --max-time 8 -o /dev/null "$target" 2>/dev/null; then
+            msg_ok "Conexão com a Internet funcionando."
+            return 0
+        fi
+    done
+    
+    # Fallback: ping
+    if ping -c 1 -W 3 8.8.8.8 >/dev/null 2>&1; then
+        msg_warn "ICMP responde, mas HTTPS falhou. Verifique proxy/firewall."
+        confirm_installation "Deseja continuar mesmo assim?" && return 0
+    fi
+    
+    msg_error "Sem conexão com a Internet. Verifique a rede."
     return 1
 }
 
-#===============================================================================
-# SEÇÃO 3 — Função: check_32bit_support
-#===============================================================================
-
-# Função: check_32bit_support
-# Descrição: Verifica e habilita arquitetura i386
-check_32bit_support() {
-    msg_info "Verificando suporte a arquitetura 32-bit..."
+detect_gpu_hardware() {
+    msg_info "Detectando hardware GPU..."
     
-    if [ "$(dpkg --print-foreign-architectures 2>/dev/null)" = "i386" ]; then
-        msg_ok "Arquitetura i386 já está habilitada."
-        THIRTYTWO_BIT=1
+    if has_cmd lspci; then
+        local gpu_line
+        gpu_line=$(lspci | grep -i -E 'vga|3d|display' | head -1)
+        if echo "$gpu_line" | grep -qi nvidia; then
+            GPU_NVIDIA=1
+            GPU_NAME=$(echo "$gpu_line" | sed 's/.*: //')
+            msg_ok "GPU NVIDIA detectada via lspci: $GPU_NAME"
+            return 0
+        fi
+    fi
+    
+    GPU_NVIDIA=0
+    msg_info "GPU NVIDIA não detectada via lspci."
+    return 1
+}
+
+validate_nvidia_driver() {
+    msg_info "Validando driver NVIDIA..."
+    
+    if ! has_cmd nvidia-smi; then
+        msg_warn "nvidia-smi não encontrado. Driver não instalado ou não no PATH."
+        DRIVER_NVIDIA=0
+        return 1
+    fi
+    
+    # Tenta rodar nvidia-smi - se falhar, driver não carregado
+    local smi_output
+    smi_output=$(nvidia-smi 2>&1)
+    local rc=$?
+    
+    if [[ $rc -ne 0 ]]; then
+        msg_warn "nvidia-smi falhou (código $rc). Driver pode não estar carregado."
+        msg_info "Saída: $smi_output"
+        DRIVER_NVIDIA=0
+        return 1
+    fi
+    
+    # Verifica se kernel module nvidia está carregado
+    if ! lsmod | grep -q '^nvidia '; then
+        msg_warn "Módulo kernel 'nvidia' não carregado."
+        DRIVER_NVIDIA=0
+        return 1
+    fi
+    
+    DRIVER_VERSION=$(echo "$smi_output" | grep 'Driver Version' | sed 's/.*: //' | awk '{print $1}')
+    msg_ok "Driver NVIDIA válido e carregado: versão $DRIVER_VERSION"
+    DRIVER_NVIDIA=1
+    return 0
+}
+
+configure_nvidia() {
+    banner "NVIDIA"
+    
+    # Detecta hardware se ainda não feito
+    if [[ $GPU_NVIDIA -eq 0 ]]; then
+        detect_gpu_hardware
+    fi
+    
+    if [[ $GPU_NVIDIA -eq 0 ]]; then
+        msg_error "GPU NVIDIA não detectada. O GameKit continuará mas desempenho será limitado."
         return 0
     fi
     
-    msg_info "Arquitetura i386 não está habilitada."
-    msg_info "Ela é necessária para compatibilidade com determinados jogos e componentes."
-    
-    if confirm_installation "i386" "Deseja habilitar a arquitetura i386?"; then
-        if sudo dpkg --add-architecture i386 >/dev/null 2>&1; then
-            msg_ok "Arquitetura i386 habilitada."
-            sudo apt update -qq >/dev/null 2>&1
-            THIRTYTWO_BIT=1
-            return 0
-        else
-            msg_error "Não foi possível habilitar a arquitetura i386."
-            return 1
-        fi
-    else
-        msg_info "Arquitetura i386 ignorada pelo usuário. Alguns jogos podem não funcionar."
-        return 1
-    fi
-}
-
-#===============================================================================
-# SEÇÃO 4 — Função: configure_nvidia
-#===============================================================================
-
-# Função: configure_nvidia
-# Descrição: Detecta e configura driver NVIDIA
-configure_nvidia() {
-    printf "\n=========================================\n"
-    printf " NVIDIA\n"
-    printf "=========================================\n"
-    
-    # Verificar se GPU NVIDIA está presente
-    if [ ${GPU_NVIDIA} -eq 0 ]; then
-        if detect_gpu; then
-            # GPU já detectada e variáveis definidas
-            :
-        else
-            msg_error "GPU NVIDIA não detectada."
-            msg_info "O GameKit continuará, mas o desempenho em jogos pode ser limitado."
-        fi
+    # Valida driver
+    if [[ $DRIVER_NVIDIA -eq 0 ]]; then
+        validate_nvidia_driver
     fi
     
-    # Verificar driver instalado
-    if [ ${DRIVER_NVIDIA} -eq 0 ]; then
-        msg_info "Verificando driver NVIDIA instalado..."
-        if nvidia-smi >/dev/null 2>&1; then
-            msg_ok "Driver NVIDIA já está instalado e funcionando."
-            DRIVER_NVIDIA=1
-        else
-            # Verificar if ubuntu-drivers command exists
-            if command -v ubuntu-drivers >/dev/null 2>&1; then
-                msg_info "Verificando driver recomendado pelo Ubuntu..."
-                RECOMMENDED_DRIVER=$(ubuntu-drivers devices 2>/dev/null | grep -oP 'recommended: \K.*' | head -1)
-                if [ -n "${RECOMMENDED_DRIVER}" ]; then
-                    msg_info "Driver recomendado: ${RECOMMENDED_DRIVER}."
-                    if confirm_installation "driver-nvidia" "Deseja instalar o driver recomendado pelo Ubuntu?\n\nIsso pode requerer reinicialização do sistema."; then
-                        msg_info "Instalando driver NVIDIA recomendado..."
-                        if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "${RECOMMENDED_DRIVER}" >/dev/null 2>&1; then
-                            msg_ok "Driver NVIDIA instalado com sucesso."
-                            DRIVER_NVIDIA=1
-                            msg_warn "Reinicie o sistema para que as alterações tenham efeito completo."
-                        else
-                            msg_error "Falha ao instalar driver NVIDIA."
-                        fi
-                    else
-                        msg_info "Driver NVIDIA ignorado pelo usuário."
-                    fi
+    if [[ $DRIVER_NVIDIA -eq 1 ]]; then
+        msg_ok "Driver NVIDIA já configurado e funcionando."
+        return 0
+    fi
+    
+    # Tenta instalar driver recomendado
+    if has_cmd ubuntu-drivers; then
+        msg_info "Verificando driver recomendado pelo Ubuntu..."
+        local recommended
+        recommended=$(ubuntu-drivers devices 2>/dev/null | grep -oP 'recommended: \K.*' | head -1)
+        
+        if [[ -n "$recommended" ]]; then
+            msg_info "Driver recomendado: $recommended"
+            if confirm_installation "Instalar driver NVIDIA recomendado ($recommended)? Isso requer reinicialização."; then
+                run_logged "Instalando driver NVIDIA" \
+                    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "$recommended"
+                local rc=$?
+                if [[ $rc -eq 0 ]]; then
+                    msg_ok "Driver instalado. REINICIE O SISTEMA para ativar."
+                    DRIVER_NVIDIA=1
                 else
-                    msg_warn "Não foi possível determinar driver recomendado."
-                    msg_info "Tente rodar: ubuntu-drivers autoinstall"
+                    msg_error "Falha ao instalar driver NVIDIA."
                 fi
             else
-                msg_warn "ubuntu-drivers não disponível."
-                msg_info "Instale o driver manualmente ou rode: sudo ubuntu-drivers autoinstall"
+                msg_info "Instalação de driver pulada pelo usuário."
             fi
+        else
+            msg_warn "Não foi possível determinar driver recomendado."
+            msg_info "Execute manualmente: sudo ubuntu-drivers autoinstall"
         fi
     else
-        msg_ok "Driver NVIDIA já verificado anteriormente."
+        msg_warn "ubuntu-drivers não disponível."
+        msg_info "Instale manualmente: sudo ubuntu-drivers autoinstall"
     fi
     
     return 0
 }
 
 #===============================================================================
-# SEÇÃO 5 — Função: enable_i386 e check_32bit_support
+# SEÇÃO 4 — Suporte 32-bit (i386)
 #===============================================================================
 
-# Já implementado acima como check_32bit_support
-
-#===============================================================================
-# SEÇÃO 6 — Função: install_vulkan
-#===============================================================================
-
-# Função: install_vulkan
-# Descrição: Instala/verifica componentes Vulkan
-install_vulkan() {
-    printf "\n=========================================\n"
-    printf " Vulkan\n"
-    printf "=========================================\n"
+check_32bit_support() {
+    banner "Arquitetura 32-bit (i386)"
     
-    msg_info "Verificando suporte a Vulkan..."
-    
-    # Verificar se vulkaninfo está disponível
-    if command -v vulkaninfo >/dev/null 2>&1; then
-        msg_ok "Vulkan Tools já estão instalados."
-        VULKAN_SUPPORT=1
-        
-        # Tentar identificar GPU Vulkan
-        local gpu_info
-        gpu_info=$(vulkaninfo 2>/dev/null | grep -i "device_name" | head -1 | sed 's/.*: //')
-        if [ -n "${gpu_info}" ]; then
-            msg_info "GPU Vulkan detectada: ${gpu_info}"
+    if dpkg --print-foreign-architectures 2>/dev/null | grep -qx i386; then
+        msg_ok "Arquitetura i386 já habilitada."
+        # Verifica se pacotes i386 instalam
+        if apt-cache policy libc6:i386 2>/dev/null | grep -q "Candidate:"; then
+            THIRTYTWO_BIT=1
+            return 0
+        else
+            msg_warn "i386 habilitado mas pacotes não disponíveis. Tentando apt update..."
+            run_logged "Atualizando lista de pacotes" sudo apt-get update -y
         fi
+    fi
+    
+    msg_info "Arquitetura i386 necessária para Steam, Wine, Proton e jogos 32-bit."
+    
+    if confirm_installation "Habilitar arquitetura i386?"; then
+        run_logged "Adicionando arquitetura i386" sudo dpkg --add-architecture i386
+        run_logged "Atualizando lista de pacotes" sudo apt-get update -y
+        
+        # Testa se funciona
+        if apt-cache policy libc6:i386 2>/dev/null | grep -q "Candidate:"; then
+            msg_ok "Arquitetura i386 habilitada e funcional."
+            THIRTYTWO_BIT=1
+            return 0
+        else
+            msg_error "i386 habilitado mas pacotes ainda não disponíveis."
+            return 1
+        fi
+    else
+        msg_warn "i386 não habilitado. Steam, Wine e muitos jogos não funcionarão."
+        return 1
+    fi
+}
+
+#===============================================================================
+# SEÇÃO 5 — Vulkan
+#===============================================================================
+
+install_vulkan() {
+    banner "Vulkan"
+    
+    msg_info "Verificando suporte Vulkan..."
+    
+    # Se vulkaninfo existe, testa se FUNCIONA
+    if has_cmd vulkaninfo; then
+        local vk_test
+        vk_test=$(vulkaninfo --summary 2>&1)
+        if [[ $? -eq 0 ]] && echo "$vk_test" | grep -qi "device_name"; then
+            local gpu_name
+            gpu_name=$(echo "$vk_test" | grep -i "device_name" | head -1 | sed 's/.*= //')
+            msg_ok "Vulkan funcionando. GPU: $gpu_name"
+            VULKAN_SUPPORT=1
+            return 0
+        else
+            msg_warn "vulkaninfo existe mas falhou ao executar. Reinstalando..."
+        fi
+    fi
+    
+    # Instala pacotes Vulkan
+    local vulkan_pkgs=("vulkan-tools")
+    
+    # validation layers - nome muda entre versões
+    if apt-cache show vulkan-validationlayers 2>/dev/null | grep -q "Package:"; then
+        vulkan_pkgs+=("vulkan-validationlayers")
+    elif apt-cache show vulkan-validation-layers 2>/dev/null | grep -q "Package:"; then
+        vulkan_pkgs+=("vulkan-validation-layers")
+    fi
+    
+    run_logged "Instalando Vulkan tools" sudo apt-get install -y "${vulkan_pkgs[@]}"
+    
+    # Verifica novamente
+    if has_cmd vulkaninfo; then
+        local vk_test
+        vk_test=$(vulkaninfo --summary 2>&1)
+        if [[ $? -eq 0 ]] && echo "$vk_test" | grep -qi "device_name"; then
+            local gpu_name
+            gpu_name=$(echo "$vk_test" | grep -i "device_name" | head -1 | sed 's/.*= //')
+            msg_ok "Vulkan funcionando. GPU: $gpu_name"
+            VULKAN_SUPPORT=1
+        else
+            msg_warn "vulkaninfo instalado mas não detecta GPU."
+        fi
+    fi
+    
+    # Se NVIDIA, garante ICD
+    if [[ $GPU_NVIDIA -eq 1 ]]; then
+        run_logged "Instalando libvulkan1 (NVIDIA ICD)" sudo apt-get install -y libvulkan1 libvulkan1:i386
+        
+        # Verifica ICD
+        if [[ -f /usr/share/vulkan/icd.d/nvidia_icd.json ]]; then
+            msg_ok "NVIDIA Vulkan ICD encontrado."
+        else
+            msg_warn "NVIDIA ICD não encontrado em /usr/share/vulkan/icd.d/nvidia_icd.json"
+        fi
+    fi
+    
+    return $([[ $VULKAN_SUPPORT -eq 1 ]] && echo 0 || echo 1)
+}
+
+#===============================================================================
+# SEÇÃO 6 — Steam
+#===============================================================================
+
+install_steam() {
+    banner "Steam"
+    
+    if has_cmd steam; then
+        msg_ok "Steam já instalado."
+        STEAM_INSTALLED=1
         return 0
     fi
     
-    # Tentar instalar vulkan-tools
-    msg_info "Instalando vulkan-tools e bibliotecas..."
+    # Garante multiverse (necessário para steam package)
+    if ! grep -r "^deb.*multiverse" /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null | grep -qv "^#"; then
+        msg_info "Habilitando repositório multiverse (necessário para Steam)..."
+        run_logged "Habilitando multiverse" sudo add-apt-repository -y multiverse
+        run_logged "Atualizando lista" sudo apt-get update -y
+    fi
     
-    if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y vulkan-tools vulkan-validationlayers 2>/dev/null; then
-        msg_ok "vulkan-tools instalados com sucesso."
-        
-        # Verificar se agora vulkaninfo está disponível
-        if command -v vulkaninfo >/dev/null 2>&1; then
-            VULKAN_SUPPORT=1
-            msg_ok "Vulkan está disponível."
-            
-            # Tentar identificar GPU
-            local gpu_info
-            gpu_info=$(vulkaninfo 2>/dev/null | grep -i "device_name" | head -1 | sed 's/.*: //')
-            if [ -n "${gpu_info}" ]; then
-                msg_info "GPU Vulkan detectada: ${gpu_info}"
+    # Tenta instalar via apt (repositório oficial Ubuntu)
+    run_logged "Instalando Steam via apt" sudo apt-get install -y steam
+    
+    if has_cmd steam; then
+        msg_ok "Steam instalado com sucesso."
+        STEAM_INSTALLED=1
+        return 0
+    fi
+    
+    # Fallback: .deb oficial
+    msg_warn "Falha no apt. Tentando .deb oficial do Steam..."
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    
+    if run_logged "Baixando Steam .deb" curl -fL --retry 3 --max-time 60 -o "${tmp_dir}/steam.deb" "https://cdn.cloudflare.steamstatic.com/client/installer/steam.deb"; then
+        if run_logged "Instalando Steam .deb" sudo dpkg -i "${tmp_dir}/steam.deb"; then
+            run_logged "Corrigindo dependências" sudo apt-get install -f -y
+            if has_cmd steam; then
+                msg_ok "Steam instalado via .deb."
+                STEAM_INSTALLED=1
+                rm -rf "$tmp_dir"
+                return 0
             fi
-            return 0
-        fi
-    else
-        msg_warn "Não foi possível instalar vulkan-tools totalmente."
-    fi
-    
-    # Verificar extensões NVIDIA específicas
-    if [ ${GPU_NVIDIA} -eq 1 ] && [ ${VULKAN_SUPPORT} -eq 0 ]; then
-        msg_info "Tentando configurar bibliotecas Vulkan para NVIDIA..."
-        if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y libvulkan1 libvulkan1:i386 2>/dev/null; then
-            msg_ok "Bibliotecas Vulkan NVIDIA instaladas."
         fi
     fi
     
+    rm -rf "$tmp_dir"
+    msg_error "Não foi possível instalar Steam."
     return 1
 }
 
 #===============================================================================
-# SEÇÃO 7 — Função: install_steam
+# SEÇÃO 7 — Proton (Steam Play)
 #===============================================================================
 
-# Função: install_steam
-# Descrição: Instala Steam
-install_steam() {
-    printf "\n=========================================\n"
-    printf " Steam\n"
-    printf "=========================================\n"
-    
-    # Verificar se Steam já está instalado
-    if command -v steam >/dev/null 2>&1; then
-        msg_ok "Steam já está instalado."
-        STEAM_INSTALLED=1
-        return 0
-    fi
-    
-    # Verificar se repositório Steam já está configurado
-    if [ -f /etc/apt/sources.list.d/steam.list ]; then
-        msg_info "Repositório Steam já configurado."
-    else
-        msg_info "Adicionando repositório oficial do Steam..."
-        if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y steam 2>/dev/null; then
-            msg_ok "Steam instalado via repositório."
-            STEAM_INSTALLED=1
-        else
-            # Tentar método alternativo - baixar .deb
-            msg_info "Tentando método alternativo para Steam..."
-            local arch_deb
-            if [ "$(uname -m)" = "aarch64" ]; then
-                arch_deb="arm64"
-            else
-                arch_deb="amd64"
-            fi
-            local tmp_dir
-            tmp_dir=$(mktemp -d)
-            if curl -sL "https://cdn.steamstatic.com/installer/steam.deb" -o "${tmp_dir}/steam.deb" 2>/dev/null; then
-                if sudo dpkg -i "${tmp_dir}/steam.deb" >/dev/null 2>&1; then
-                    msg_ok "Steam instalado via .deb."
-                    STEAM_INSTALLED=1
-                else
-                    msg_warn "Falha ao instalar .deb do Steam."
-                fi
-            else
-                msg_error "Não foi possível baixar o instalador do Steam."
-            fi
-            rm -rf "$tmp_dir"
-        fi
-    fi
-    
-    # Verificação final
-    if command -v steam >/dev/null 2>&1; then
-        STEAM_INSTALLED=1
-        msg_ok "Steam instalado e disponível."
-        return 0
-    else
-        msg_error "Steam não pôde ser instalado."
-        return 1
-    fi
-}
-
-#===============================================================================
-# SEÇÃO 8 — Função: configure_proton
-#===============================================================================
-
-# Função: configure_proton
-# Descrição: Configura Proton para Steam Play
 configure_proton() {
-    printf "\n=========================================\n"
-    printf " Proton (Steam Play)\n"
-    printf "=========================================\n"
+    banner "Proton (Steam Play)"
     
-    msg_info "O Proton é utilizado pelo Steam para executar jogos Windows."
-    msg_info "Verificando se Steam está instalado..."
-    
-    if [ ${STEAM_INSTALLED} -eq 0 ]; then
-        msg_warn "Steam não está instalado. Configure o Steam primeiro."
+    if [[ $STEAM_INSTALLED -eq 0 ]]; then
+        msg_warn "Steam não instalado. Instale o Steam primeiro."
         return 1
     fi
     
-    # Perguntar ao usuário
-    if confirm_installation "proton" "Deseja configurar o Steam Play para jogos Windows?"; then
-        msg_info "Configurando Proton e bibliotecas necessárias..."
-        
-        # Instalar bibliotecas necessárias para Proton
-        if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            libsd2-gm0-libs:i386 \
-            libgtk-3-0:i386 \
-            libasound2:i386 \
-            libfreetype6:i386 \
-            libcurl4-openssl-dev:i386 \
-            libssl3:i386 2>/dev/null; then
-            msg_ok "Bibliotecas 32-bit para Proton instaladas."
-        else
-            msg_warn "Não foi possível instalar todas as bibliotecas 32-bit."
-        fi
-        
-        msg_ok "Proton configurado. Ative 'Steam Play' na interface do Steam para usar."
-        msg_info "Para ativar: Abra Steam → Configurações → Conta → Biblioteca → \"Habilitar Steam Play para todos os outros títulos\"."
-        return 0
+    if ! confirm_installation "Configurar bibliotecas 32-bit para Proton (Steam Play)?"; then
+        msg_info "Configuração Proton pulada."
+        return 1
+    fi
+    
+    msg_info "Instalando bibliotecas 32-bit necessárias para Proton..."
+    
+    # Pacotes base (comuns 22.04 e 24.04)
+    local proton_pkgs=(
+        libsdl2-2.0-0:i386
+        libgtk-3-0:i386
+        libasound2:i386
+        libfreetype6:i386
+        libcurl4:i386
+    )
+    
+    # libssl depende da versão
+    if [[ "$UBUNTU_VERSION" == "24" ]]; then
+        proton_pkgs+=(libssl3:i386)
     else
-        msg_info "Configuração do Proton ignorada pelo usuário."
-        return 1
+        proton_pkgs+=(libssl1.1:i386)
     fi
+    
+    # Tenta instalar todos
+    local failed=0
+    for pkg in "${proton_pkgs[@]}"; do
+        if ! run_logged "Instalando $pkg" sudo apt-get install -y "$pkg"; then
+            msg_warn "Falha ao instalar $pkg (pode não existir nesta versão)"
+            failed=1
+        fi
+    done
+    
+    if [[ $failed -eq 0 ]]; then
+        msg_ok "Bibliotecas 32-bit para Proton instaladas."
+    else
+        msg_warn "Algumas bibliotecas falharam. Proton pode ter problemas."
+    fi
+    
+    msg_ok "Proton: bibliotecas configuradas."
+    msg_info "Para ativar: Steam → Configurações → Compatibilidade → 'Habilitar Steam Play para títulos suportados' e 'para todos os outros títulos'."
+    return 0
 }
 
 #===============================================================================
-# SEÇÃO 9 — Função: install_lutris
+# SEÇÃO 8 — Lutris
 #===============================================================================
 
-# Função: install_lutris
-# Descrição: Instala Lutris
 install_lutris() {
-    printf "\n=========================================\n"
-    printf " Lutris\n"
-    printf "=========================================\n"
+    banner "Lutris"
     
-    # Verificar se Lutris já está instalado
-    if command -v lutris >/dev/null 2>&1; then
-        msg_ok "Lutris já está instalado."
+    if has_cmd lutris; then
+        msg_ok "Lutris já instalado."
         LUTRIS_INSTALLED=1
         return 0
     fi
     
-    msg_info "Instalando Lutris via repositório oficial..."
+    local installed=0
     
-    # Adicionar repositório Lutris (compatível com Ubuntu 22.04 e 24.04)
-    local lutris_ppa="ppa:lutris/lutris"
-    if [ "${UBUNTU_VERSION:-}" = "24.04" ]; then
-        # Ubuntu 24.04 (noble) pode não ter PPA atualizado, usar Flatpak como alternativa preferida
-        msg_info "Ubuntu 24.04 detectado: usando Flatpak para Lutris (PPA pode não ter build para noble)."
+    # Ubuntu 24.04: PPA lutris/lutris não tem build para noble ainda
+    if [[ "$UBUNTU_VERSION" == "24" ]]; then
+        msg_info "Ubuntu 24.04 detectado: PPA Lutris não tem build para noble. Usando Flatpak."
     else
-        if sudo env DEBIAN_FRONTEND=noninteractive apt-add-repository -y "$lutris_ppa" 2>/dev/null; then
-            msg_ok "Repositório Lutris adicionado."
-        else
-            msg_warn "Não foi possível adicionar repositório Lutris."
-        fi
-    fi
-
-    # Tentar instalação via APT primeiro (se PPA foi adicionado)
-    if [ -f /etc/apt/sources.list.d/lutris-ubuntu-lutris-*.list ]; then
-        apt_update
-        if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y lutris 2>/dev/null; then
-            msg_ok "Lutris instalado via APT."
-            LUTRIS_INSTALLED=1
-        else
-            msg_warn "Falha ao instalar Lutris via APT."
-        fi
-    fi
-
-    # Fallback: Flatpak (funciona em ambas versões)
-    if [ ${LUTRIS_INSTALLED} -eq 0 ]; then
-        msg_info "Tentando instalação via Flatpak..."
-        if ! command -v flatpak >/dev/null 2>&1; then
-            msg_info "Instalando Flatpak..."
-            sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y flatpak 2>/dev/null
-        fi
-        if command -v flatpak >/dev/null 2>&1; then
-            flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null
-            flatpak install -y flathub org.lutris.Lutris 2>/dev/null
-            if flatpak list --columns=application | grep -q "org.lutris.Lutris" 2>/dev/null; then
-                LUTRIS_INSTALLED=1
-                msg_ok "Lutris instalado via Flatpak."
-                return 0
+        # Tenta PPA para 22.04
+        msg_info "Adicionando PPA Lutris..."
+        if run_logged "Adicionando PPA lutris/lutris" sudo add-apt-repository -y ppa:lutris/lutris; then
+            run_logged "Atualizando lista" sudo apt-get update -y
+            if run_logged "Instalando Lutris via apt" sudo apt-get install -y lutris; then
+                installed=1
             fi
         fi
-        msg_error "Não foi possível instalar Lutris."
-        return 1
     fi
     
-    # Configurar Wine básico para Lutris se instalado
-    if [ ${LUTRIS_INSTALLED} -eq 1 ]; then
-        msg_info "Configurando suporte Wine básico para Lutris..."
-        if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y wine64 winetricks 2>/dev/null; then
-            msg_ok "Wine e Winetricks instalados para Lutris."
-        fi
-    fi
-    
-    return 0
-}
-
-#===============================================================================
-# SEÇÃO 10 — Função: install_wine
-#===============================================================================
-
-# Função: install_wine
-# Descrição: Instala Wine
-install_wine() {
-    printf "\n=========================================\n"
-    printf " Wine\n"
-    printf "=========================================\n"
-    
-    # Verificar se Wine já está instalado
-    if command -v wine >/dev/null 2>&1; then
-        msg_ok "Wine já está instalado."
-        WINE_INSTALLED=1
-        # Verificar wine64
-        if command -v wine64 >/dev/null 2>&1; then
-            msg_ok "Wine64 está disponível."
-        else
-            msg_warn "Wine64 não encontrado, mas wine32 pode estar instalado."
-        fi
-        return 0
-    fi
-    
-    msg_info "Instalando Wine estável via repositório..."
-    
-    # Adicionar repositório WineHQ
-    if [ ! -f /etc/apt/sources.list.d/winehq.list ]; then
-        msg_info "Adicionando repositório WineHQ..."
-        sudo wget -NP /etc/apt/trusted.gpg.d/ https://winehq.org/keys/winehq.key 2>/dev/null
-        echo "deb https://winehq.org/Ubuntu ${UBUNTU_CODENAME} main" | sudo tee /etc/apt/sources.list.d/winehq.list >/dev/null 2>&1
-    fi
-    
-    apt_update
-    
-    # Instalar Wine stable
-    if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y wine-stable 2>/dev/null; then
-        msg_ok "Wine Stable instalado com sucesso."
-        WINE_INSTALLED=1
-        
-        # Verificar wine64
-        if command -v wine64 >/dev/null 2>&1; then
-            msg_ok "Wine64 está disponível."
-        else
-            msg_info "Instalando suporte 32-bit para Wine..."
-            sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y wine32 2>/dev/null
-        fi
-        
-        # Instalar winetricks
-        msg_info "Instalando Winetricks..."
-        if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y winetricks 2>/dev/null; then
-            msg_ok "Winetricks instalado."
-        fi
-        
-        return 0
-    else
-        msg_warn "Falha ao instalar WineStable via repositório oficial."
-        msg_info "Tentando instalar winehq-stable..."
-        if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y winehq-stable 2>/dev/null; then
-            msg_ok "winehq-stable instalado."
-            WINE_INSTALLED=1
-            return 0
-        fi
-        
-        # Tentar instalação via Flatpak
+    # Fallback Flatpak
+    if [[ $installed -eq 0 ]]; then
         msg_info "Tentando instalação via Flatpak..."
-        if command -v flatpak >/dev/null 2>&1; then
-            flatpak install flathub wine 2>/dev/null
+        
+        if ! has_cmd flatpak; then
+            run_logged "Instalando Flatpak" sudo apt-get install -y flatpak
         fi
         
-        return 1
-    fi
-}
-
-#===============================================================================
-# SEÇÃO 11 — Função: install_winetricks
-#===============================================================================
-
-# Função: install_winetricks
-# Descrição: Instala Winetricks
-install_winetricks() {
-    printf "\n=========================================\n"
-    printf " Winetricks\n"
-    printf "=========================================\n"
-    
-    # Verificar se Winetricks já está instalado
-    if command -v winetricks >/dev/null 2>&1; then
-        msg_ok "Winetricks já está instalado."
-        WINE_INSTALLED=1
-        return 0
-    fi
-    
-    msg_info "Instalando Winetricks..."
-    
-    if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y winetricks 2>/dev/null; then
-        msg_ok "Winetricks instalado com sucesso."
-        
-        # Não instalar componentes automáticos (vcrun, dotnet, directx, corefonts)
-        msg_info "Winetricks instalado. Componentes como vcrun, dotnet, directx e corefonts"
-        msg_info "devem ser instalados por jogo, quando necessários, via: winetricks <componente>"
-        return 0
-    else
-        msg_error "Não foi possível instalar Winetricks."
-        return 1
-    fi
-}
-
-#===============================================================================
-# SEÇÃO 12 — Função: configure_dxvk
-#===============================================================================
-
-# Função: configure_dxvk
-# Descrição: Prepara ambiente DXVK
-configure_dxvk() {
-    printf "\n=========================================\n"
-    printf " DXVK\n"
-    printf "=========================================\n"
-    
-    msg_info "DXVK traduz Direct3D 9/10/11 para Vulkan."
-    msg_info "Este componente é geralmente gerenciado automaticamente pelo Proton/Lutris."
-    msg_info "Não instale manualmente versões específicas sem necessidade."
-    msg_info "O Proton já inclui DXVK integrado. O Lutris também o gerencia automaticamente."
-    msg_info "Se precisar de uma versão específica, utilize o gerenciador de runners do Lutris."
-    
-    # Apenas verificar se está disponível
-    if [ ${STEAM_INSTALLED} -eq 1 ] || [ ${LUTRIS_INSTALLED} -eq 1 ]; then
-        msg_info "DXVK deverá estar disponível através do Proton ou Lutris."
-    fi
-    
-    return 0
-}
-
-#===============================================================================
-# SEÇÃO 13 — Função: configure_vkd3d
-#===============================================================================
-
-# Função: configure_vkd3d
-# Descrição: Prepara suporte DirectX 12
-configure_vkd3d() {
-    printf "\n=========================================\n"
-    printf " VKD3D / DirectX 12\n"
-    printf "=========================================\n"
-    
-    msg_info "VKD3D traduz Direct3D 12 para Vulkan."
-    msg_info "Assim como DXVK, é gerenciado automaticamente pelo Proton/Lutris."
-    msg_info "Não faça instalação manual desnecessária caso Proton/Lutris já forneçam o componente."
-    
-    return 0
-}
-
-#===============================================================================
-# SEÇÃO 14 — Função: install_gamemode
-#===============================================================================
-
-# Função: install_gamemode
-# Descrição: Instala GameMode
-install_gamemode() {
-    printf "\n=========================================\n"
-    printf " GameMode\n"
-    printf "=========================================\n"
-    
-    # Verificar se GameMode já está instalado
-    if command -v gamemoded >/dev/null 2>&1; then
-        msg_ok "GameMode já está instalado."
-        GAMEMODE_INSTALLED=1
-        return 0
-    fi
-    
-    msg_info "Instalando GameMode..."
-    
-    if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y gamemode 2>/dev/null; then
-        msg_ok "GameMode instalado com sucesso."
-        GAMEMODE_INSTALLED=1
-        
-        # Verificar comando de teste
-        if command -v gamemoded -t >/dev/null 2>&1; then
-            msg_ok "GameMode funcional verificado."
-        fi
-        return 0
-    else
-        msg_warn "Não foi possível instalar GameMode via APT."
-        msg_info "Tente: sudo add-apt-repository ppa:gamescope-dev/gamescope && sudo apt update && sudo apt install gamemode"
-        return 1
-    fi
-}
-
-#===============================================================================
-# SEÇÃO 15 — Função: install_mangohud
-#===============================================================================
-
-# Função: install_mangohud
-# Descrição: Instala MangoHUD
-install_mangohud() {
-    printf "\n=========================================\n"
-    printf " MangoHUD\n"
-    printf "=========================================\n"
-    
-    # Verificar se MangoHUD já está instalado
-    if command -v mangohud >/dev/null 2>&1; then
-        msg_ok "MangoHUD já está instalado."
-        MANGOHUD_INSTALLED=1
-        return 0
-    fi
-    
-    msg_info "Instalando MangoHUD..."
-    
-    # Perguntar antes de instalar
-    if confirm_installation "mangohud" "Deseja instalar MangoHUD para monitoramento de desempenho?"; then
-        if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y mangohud 2>/dev/null; then
-            msg_ok "MangoHUD instalado com sucesso."
-            MANGOHUD_INSTALLED=1
+        if has_cmd flatpak; then
+            run_logged "Adicionando Flathub" flatpak remote-add --if-not-exists --system flathub https://dl.flathub.org/repo/flathub.flatpakrepo
             
-            # Informar sobre overlay
-            msg_info "MangoHUD pode ser ativado via:"
-            msg_info "  - Terminal: MANGOHUD=1 <comando>"
-            msg_info "  - Emulação: Gerenciadores de runners (Lutris, Bottles)"
-            return 0
-        else
-            msg_error "Não foi possível instalar MangoHUD."
-            return 1
+            # Tenta IDs conhecidos
+            for app_id in "org.lutris.Lutris" "net.lutris.Lutris"; do
+                if run_logged "Instalando $app_id via Flatpak" flatpak install -y --system flathub "$app_id"; then
+                    if flatpak list --system --columns=application | grep -q lutris; then
+                        installed=1
+                        break
+                    fi
+                fi
+            done
         fi
-    else
-        msg_info "MangoHUD ignorado pelo usuário."
-        return 1
-    fi
-}
-
-#===============================================================================
-# SEÇÃO 16 — Função: configure_controllers
-#===============================================================================
-
-# Função: configure_controllers
-# Descrição: Configura suporte a controladores
-configure_controllers() {
-    printf "\n=========================================\n"
-    printf " Controladores\n"
-    printf "=========================================\n"
-    
-    msg_info "Verificando reconhecimento de controladores..."
-    
-    # Verificar dispositivos de entrada
-    if command -v jstest-gtk >/dev/null 2>&1; then
-        msg_info "jstest-gtk disponível para teste de controladores."
     fi
     
-    # Verificar controladores Xbox/PlayStation via xboxdrv ou similar
-    if dpkg -l | grep -q xboxdrv 2>/dev/null; then
-        msg_info "xboxdrv instalado para suporte a controladores Xbox."
-    fi
-    
-    # Verificar Bluetooth
-    msg_info "Controladores Bluetooth devem ser reconhecidos automaticamente no Linux."
-    msg_info "Para controladores USB, basta conectar e verificar em 'jstest-gtk' ou 'gamecontrollers'."
-    
-    msg_ok "Suporte básico verificado. O Linux reconhece a maioria dos controladores plug-and-play."
-    return 0
-}
-
-#===============================================================================
-# SEÇÃO 17 — Função: create_game_directories
-#===============================================================================
-
-# Função: create_game_directories
-# Descrição: Cria diretórios organizados para jogos
-create_game_directories() {
-    printf "\n=========================================\n"
-    printf " Diretórios de Jogos\n"
-    printf "=========================================\n"
-    
-    # Perguntar antes de criar
-    if confirm_installation "diretórios" "Deseja criar uma estrutura de diretórios para jogos?"; then
-        msg_info "Criando estrutura de diretórios em ${HOME}/Games..."
+    if [[ $installed -eq 1 ]]; then
+        msg_ok "Lutris instalado."
+        LUTRIS_INSTALLED=1
         
-        mkdir -p "${HOME}/Games"
-        mkdir -p "${HOME}/Games/Steam"
-        mkdir -p "${HOME}/Games/Lutris"
-        mkdir -p "${HOME}/Games/Other"
-        
-        if [ $? -eq 0 ]; then
-            msg_ok "Estrutura de diretórios criada com sucesso."
-            msg_info "Estrutura criada:"
-            msg_info "  ~/Games/ - Diretório geral"
-            msg_info "  ~/Games/Steam/ - Para jogos da Steam"
-            msg_info "  ~/Games/Lutris/ - Para jogos do Lutris"
-            msg_info "  ~/Games/Other/ - Para outros jogos"
-            return 0
-        else
-            msg_error "Não foi possível criar diretórios. Verifique permissões."
-            return 1
+        # Wine para Lutris (opcional, Lutris baixa seus próprios runners)
+        if confirm_installation "Instalar wine64 e winetricks para suporte Wine no Lutris?"; then
+            run_logged "Instalando wine64" sudo apt-get install -y wine64
+            run_logged "Instalando winetricks" sudo apt-get install -y winetricks
         fi
-    else
-        msg_info "Estrutura de diretórios ignorada pelo usuário."
-        return 1
-    fi
-}
-
-#===============================================================================
-# SEÇÃO 18 — Funções de diagnóstico
-#===============================================================================
-
-# Função: system_diagnostics
-# Descrição: Diagnóstico completo do sistema
-system_diagnostics() {
-    printf "\n=========================================\n"
-    printf " GameKit Diagnostics\n"
-    printf "=========================================\n\n"
-    
-    # GPU
-    printf "GPU:\n"
-    if [ ${GPU_NVIDIA} -eq 1 ]; then
-        printf "  NVIDIA GeForce RTX 3060\n"
-    else
-        printf "  GPU não detectada ou não-NVIDIA\n"
-    fi
-    
-    # Driver
-    printf "\nDriver:\n"
-    if [ ${DRIVER_NVIDIA} -eq 1 ]; then
-        local drv_version
-        drv_version=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits 2>/dev/null | tr -d ' ')
-        printf "  NVIDIA Driver version: ${drv_version}\n"
-    else
-        printf "  Driver NVIDIA não detectado\n"
-    fi
-    
-    # Vulkan
-    printf "\nVulkan:\n"
-    if [ ${VULKAN_SUPPORT} -eq 1 ] && command -v vulkaninfo >/dev/null 2>&1; then
-        printf "  [OK]\n"
-        local gpu_vulkan
-        gpu_vulkan=$(vulkaninfo 2>/dev/null | grep -i "device_name" | head -1 | sed 's/.*: //')
-        if [ -n "${gpu_vulkan}" ]; then
-            printf "  GPU Vulkan: ${gpu_vulkan}\n"
-        fi
-    else
-        printf "  [VERIFICAR]\n"
-    fi
-    
-    # 32-bit
-    printf "\n32-bit:\n"
-    if [ ${THIRTYTWO_BIT} -eq 1 ]; then
-        printf "  [OK] Arquitetura i386 habilitada\n"
-    else
-        printf "  [NÃO] Arquitetura i386 não habilitada\n"
-    fi
-    
-    # Steam
-    printf "\nSteam:\n"
-    if [ ${STEAM_INSTALLED} -eq 1 ]; then
-        printf "  [OK] Steam instalado\n"
-    else
-        printf "  [NÃO] Steam não instalado\n"
-    fi
-    
-    # Lutris
-    printf "\nLutris:\n"
-    if [ ${LUTRIS_INSTALLED} -eq 1 ]; then
-        printf "  [OK] Lutris instalado\n"
-    else
-        printf "  [NÃO] Lutris não instalado\n"
-    fi
-    
-    # Wine
-    printf "\nWine:\n"
-    if [ ${WINE_INSTALLED} -eq 1 ]; then
-        local wine_version
-        wine_version=$(wine --version 2>/dev/null | sed 's/wine-//')
-        printf "  [OK] Wine ${wine_version}\n"
-    else
-        printf "  [NÃO] Wine não instalado\n"
-    fi
-    
-    # GameMode
-    printf "\nGameMode:\n"
-    if [ ${GAMEMODE_INSTALLED} -eq 1 ]; then
-        printf "  [OK] GameMode instalado\n"
-    else
-        printf "  [NÃO] GameMode não instalado\n"
-    fi
-    
-    # MangoHUD
-    printf "\nMangoHUD:\n"
-    if [ ${MANGOHUD_INSTALLED} -eq 1 ]; then
-        printf "  [OK] MangoHUD instalado\n"
-    else
-        printf "  [NÃO] MangoHUD não instalado\n"
-    fi
-}
-
-# Função: nvidia_diagnostics
-nvidia_diagnostics() {
-    printf "\n=== Diagnóstico NVIDIA ===\n"
-    
-    if [ ${GPU_NVIDIA} -eq 1 ]; then
-        printf "GPU:\n"
-        nvidia-smi --query-gpu=name --format=csv,noheader,nounits 2>/dev/null | tr -d ' ' | while read -r name; do
-            printf "  %s\n" "${name}"
-        done
-        
-        printf "\nDriver:\n"
-        nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits 2>/dev/null | tr -d ' ' | while read -r version; do
-            printf "  %s\n" "${version}"
-        done
-        
-        printf "\nVRAM:\n"
-        nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | tr -d ' ' | while read -r vram; do
-            printf "  %s MB\n" "${vram}"
-        done
-        
-        printf "\nUtilização:\n"
-        nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | tr -d ' ' | while read -p u; do
-            printf "  %s%%\n" "${u}"
-        done
-        
-        printf "\nTemperatura:\n"
-        nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits 2>/dev/null | tr -d ' ' | while read -r temp; do
-            printf "  %s°C\n" "${temp}"
-        done
-    else
-        printf "GPU NVIDIA não detectada.\n"
-    fi
-    
-    # Vulkan
-    printf "\n--- Vulkan ---\n"
-    if command -v vulkaninfo >/dev/null 2>&1; then
-        vulkaninfo 2>/dev/null | grep -A 1 "device name" | head -2
-    else
-        printf "vulkaninfo não disponível.\n"
-    fi
-}
-
-# Função: steam_diagnostics
-steam_diagnostics() {
-    printf "\n=== Diagnóstico Steam ===\n"
-    
-    if [ ${STEAM_INSTALLED} -eq 1 ]; then
-        printf "Steam: [OK] Instalado\n"
-        
-        # Verificar arquitetura 32-bit
-        if [ ${THIRTYTWO_BIT} -eq 1 ]; then
-            printf "Bibliotecas 32-bit: [OK]\n"
-        else
-            printf "Bibliotecas 32-bit: [VERIFICAR]\n"
-        fi
-        
-        # Verificar Vulkan
-        if [ ${VULKAN_SUPPORT} -eq 1 ]; then
-            printf "Vulkan: [OK]\n"
-        else
-            printf "Vulkan: [VERIFICAR]\n"
-        fi
-        
-        # Driver NVIDIA
-        if [ ${DRIVER_NVIDIA} -eq 1 ]; then
-            printf "Driver NVIDIA: [OK]\n"
-        else
-            printf "Driver NVIDIA: [VERIFICAR]\n"
-        fi
-    else
-        printf "Steam: [NÃO] Não instalado\n"
-    fi
-}
-
-# Função: lutris_diagnostics
-lutris_diagnostics() {
-    printf "\n=== Diagnóstico Lutris ===\n"
-    
-    if [ ${LUTRIS_INSTALLED} -eq 1 ]; then
-        printf "Lutris: [OK] Instalado\n"
-        
-        # Verificar Wine
-        if command -v wine >/dev/null 2>&1; then
-            local wine_version
-            wine_version=$(wine --version 2>/dev/null | sed 's/wine-//')
-            printf "Wine: [OK] ${wine_version}\n"
-        else
-            printf "Wine: [NÃO] Não disponível\n"
-            printf "Nota: O Lutris pode baixar seu próprio Wine runner.\n"
-        fi
-        
-        # Verificar Winetricks
-        if command -v winetricks >/dev/null 2>&1; then
-            printf "Winetricks: [OK]\n"
-        else
-            printf "Winetricks: [NÃO]\n"
-        fi
-        
-        # Vulkan
-        if [ ${VULKAN_SUPPORT} -eq 1 ]; then
-            printf "Vulkan: [OK]\n"
-        else
-            printf "Vulkan: [VERIFICAR]\n"
-        fi
-    else
-        printf "Lutris: [NÃO] Não instalado\n"
-        printf "Nota: Instale o Lutris para configurar runners e jogos.\n"
-    fi
-}
-
-#===============================================================================
-# SEÇÃO 19 — Função: summary
-#===============================================================================
-
-# Função: summary
-# Descrição: Mostra resumo final da instalação
-summary() {
-    printf "\n=========================================\n"
-    printf " GameKit Installation Summary\n"
-    printf "=========================================\n\n"
-    
-    printf "GPU\n"
-    if [ ${GPU_NVIDIA} -eq 1 ]; then
-        printf "[OK] NVIDIA GeForce RTX 3060\n"
-    else
-        printf "[INFO] GPU não detectada/não-NVIDIA\n"
-    fi
-    
-    if [ ${DRIVER_NVIDIA} -eq 1 ]; then
-        printf "[OK] NVIDIA Driver\n"
-    else
-        printf "[AVISO] Driver NVIDIA não configurado\n"
-    fi
-    
-    printf "\nVulkan\n"
-    if [ ${VULKAN_SUPPORT} -eq 1 ]; then
-        printf "[OK] Vulkan\n"
-    else
-        printf "[AVISO] Vulkan não configurado\n"
-    fi
-    
-    if [ ${THIRTYTWO_BIT} -eq 1 ]; then
-        printf "[OK] 32-bit Libraries\n"
-    else
-        printf "[AVISO] 32-bit Libraries não habilitadas\n"
-    fi
-    
-    printf "\nGaming\n"
-    
-    if [ ${STEAM_INSTALLED} -eq 1 ]; then
-        printf "[OK] Steam\n"
-    else
-        printf "[INFO] Steam não instalado\n"
-    fi
-    
-    if [ ${LUTRIS_INSTALLED} -eq 1 ]; then
-        printf "[OK] Lutris\n"
-    else
-        printf "[INFO] Lutris não instalado\n"
-    fi
-    
-    if [ ${WINE_INSTALLED} -eq 1 ]; then
-        printf "[OK] Wine\n"
-    else
-        printf "[INFO] Wine não instalado\n"
-    fi
-    
-    if [ ${GAMEMODE_INSTALLED} -eq 1 ]; then
-        printf "[OK] GameMode\n"
-    else
-        printf "[INFO] GameMode não instalado\n"
-    fi
-    
-    if [ ${MANGOHUD_INSTALLED} -eq 1 ]; then
-        printf "[OK] MangoHUD\n"
-    else
-        printf "[INFO] MangoHUD não instalado\n"
-    fi
-    
-    printf "\nDiagnostics\n"
-    
-    # Verificar cada ferramenta
-    local has_errors=0
-    
-    if command -v vulkaninfo >/dev/null 2>&1; then
-        printf "[OK] vulkaninfo\n"
-    else
-        printf "[INFO] vulkaninfo não disponível\n"
-        has_errors=1
-    fi
-    
-    if command -v nvidia-smi >/dev/null 2>&1; then
-        printf "[OK] nvidia-smi\n"
-    else
-        printf "[INFO] nvidia-smi não disponível\n"
-        has_errors=1
-    fi
-    
-    printf "\n=========================================\n"
-    
-    # Resumo de erros e skipped
-    if [ ${ERRORS} -gt 0 ]; then
-        printf "[ERRO] Foram detectados %d erros durante a instalação.\n" "${ERRORS}"
-    fi
-    
-    if [ ${SKIPPED} -gt 0 ]; then
-        printf "[AVISO] %d componentes foram ignorados pelo usuário.\n" "${SKIPPED}"
-    fi
-    
-    # Informações de log
-    printf "\nLog:\n"
-    printf "  ~/gamekit/gamekit-install.log\n"
-    
-    printf "\nComponentes principais:\n"
-    printf "  Steam:        %s\n" "$([ ${STEAM_INSTALLED} -eq 1 ] && echo 'Instalado' || 'Não instalado')"
-    printf "  Lutris:       %s\n" "$([ ${LUTRIS_INSTALLED} -eq 1 ] && echo 'Instalado' || 'Não instalado')"
-    printf "  Wine:         %s\n" "$([ ${WINE_INSTALLED} -eq 1 ] && echo 'Instalado' || 'Não instalado')"
-    printf "  Vulkan:       %s\n" "$([ ${VULKAN_SUPPORT} -eq 1 ] && echo 'Disponível' || 'Não verificado')"
-    printf "  NVIDIA:       %s\n" "$([ ${DRIVER_NVIDIA} -eq 1 ] && echo 'Driver instalado' || 'Não configurado')"
-    printf "  GameMode:     %s\n" "$([ ${GAMEMODE_INSTALLED} -eq 1 ] && echo 'Instalado' || 'Não instalado')"
-    printf "  MangoHUD:     %s\n" "$([ ${MANGOHUD_INSTALLED} -eq 1 ] && echo 'Instalado' || 'Não instalado')"
-    
-    printf "\n%s\n" "========================================="
-}
-
-#===============================================================================
-# SEÇÃO 20 — Função: install_docker_utils (se necessário)
-#===============================================================================
-
-# Função auxiliar para verificar componentes de repositório
-check_package_available() {
-    local package="$1"
-    if apt-cache show "${package}" >/dev/null 2>&1; then
         return 0
     fi
+    
+    msg_error "Não foi possível instalar Lutris (PPA e Flatpak falharam)."
     return 1
 }
 
 #===============================================================================
-# SEÇÃO 21 — Função: main
+# SEÇÃO 9 — Wine
 #===============================================================================
 
-# Função: main
-# Descrição: Ponto de entrada principal
-main() {
-    # Inicializar log
-    mkdir -p "$(dirname "${LOG_FILE}")"
-    >"${LOG_FILE}"
+install_wine() {
+    banner "Wine"
     
-    # Cabeçalho
-    printf "\n=========================================\n"
-    printf " Ubuntu GameKit\n"
-    printf "=========================================\n"
-    printf "\nConfiguração de ambiente para jogos\n\n"
+    if has_cmd wine; then
+        msg_ok "Wine já instalado: $(wine --version 2>/dev/null | head -1)"
+        WINE_INSTALLED=1
+        has_cmd wine64 && msg_ok "wine64 disponível."
+        return 0
+    fi
     
-    # Verificações preliminares
-    if ! check_os; then
-        msg_error "Este script requer Ubuntu 22.04 ou 24.04."
+    msg_info "Instalando Wine via repositório WineHQ..."
+    
+    # Adiciona repo WineHQ se não existe
+    if [[ ! -f /etc/apt/sources.list.d/winehq.list ]]; then
+        run_logged "Baixando chave WineHQ" \
+            sudo wget -O /etc/apt/keyrings/winehq.key https://dl.winehq.org/wine-builds/winehq.key
+        
+        echo "deb [signed-by=/etc/apt/keyrings/winehq.key] https://dl.winehq.org/wine-builds/ubuntu/ ${UBUNTU_CODENAME} main" | \
+            sudo tee /etc/apt/sources.list.d/winehq.list >/dev/null
+        
+        run_logged "Atualizando lista" sudo apt-get update -y
+    fi
+    
+    # Tenta winehq-stable (meta-pacote que puxa dependências certas)
+    if run_logged "Instalando winehq-stable" sudo apt-get install -y --install-recommends winehq-stable; then
+        msg_ok "WineHQ Stable instalado."
+        WINE_INSTALLED=1
+    else
+        msg_warn "winehq-stable falhou. Tentando wine-stable (pacote Ubuntu)..."
+        if run_logged "Instalando wine-stable" sudo apt-get install -y wine-stable; then
+            msg_ok "wine-stable instalado."
+            WINE_INSTALLED=1
+        else
+            msg_error "Falha ao instalar Wine."
+            return 1
+        fi
+    fi
+    
+    # Verifica wine64
+    if has_cmd wine64; then
+        msg_ok "wine64 disponível."
+    else
+        msg_warn "wine64 não encontrado. Tentando instalar wine32:i386..."
+        run_logged "Instalando wine32:i386" sudo apt-get install -y wine32:i386 2>/dev/null || \
+        run_logged "Instalando wine32" sudo apt-get install -y wine32 2>/dev/null
+    fi
+    
+    # Winetricks separado
+    if confirm_installation "Instalar Winetricks?"; then
+        run_logged "Instalando Winetricks" sudo apt-get install -y winetricks
+        WINETRICKS_INSTALLED=1
+    fi
+    
+    return 0
+}
+
+#===============================================================================
+# SEÇÃO 10 — Winetricks
+#===============================================================================
+
+install_winetricks() {
+    banner "Winetricks"
+    
+    if has_cmd winetricks; then
+        msg_ok "Winetricks já instalado: $(winetricks --version 2>/dev/null | head -1)"
+        WINETRICKS_INSTALLED=1
+        return 0
+    fi
+    
+    if run_logged "Instalando Winetricks" sudo apt-get install -y winetricks; then
+        msg_ok "Winetricks instalado."
+        WINETRICKS_INSTALLED=1
+        msg_info "Componentes (vcrun, dotnet, corefonts, etc.) devem ser instalados por prefixo/jogo:"
+        msg_info "  WINEPREFIX=~/.wine-meu-jogo winetricks vcrun2019 corefonts"
+        return 0
+    fi
+    
+    msg_error "Falha ao instalar Winetricks."
+    return 1
+}
+
+#===============================================================================
+# SEÇÃO 11 — DXVK / VKD3D (apenas informativo)
+#===============================================================================
+
+info_dxvk() {
+    banner "DXVK"
+    msg_info "DXVK traduz Direct3D 9/10/11 para Vulkan."
+    msg_info "Gerenciado automaticamente por:"
+    msg_info "  - Steam/Proton (incluso no Proton)"
+    msg_info "  - Lutris (via runners Wine)"
+    msg_info "Não instale manualmente a menos que precise de versão específica."
+    msg_info "Para versões customizadas: use gerenciador de runners do Lutris."
+    return 0
+}
+
+info_vkd3d() {
+    banner "VKD3D / DirectX 12"
+    msg_info "VKD3D traduz Direct3D 12 para Vulkan."
+    msg_info "Gerenciado automaticamente por Proton (Proton 8+/GE) e Lutris."
+    msg_info "Não instale manualmente sem necessidade."
+    return 0
+}
+
+#===============================================================================
+# SEÇÃO 12 — GameMode
+#===============================================================================
+
+install_gamemode() {
+    banner "GameMode"
+    
+    if has_cmd gamemoded; then
+        msg_ok "GameMode já instalado."
+        GAMEMODE_INSTALLED=1
+        # Testa se funciona
+        if gamemoded -t 2>/dev/null; then
+            msg_ok "GameMode funcional (gamemoded -t OK)."
+        else
+            msg_warn "GameMode instalado mas gamemoded -t falhou."
+        fi
+        return 0
+    fi
+    
+    if run_logged "Instalando GameMode" sudo apt-get install -y gamemode; then
+        msg_ok "GameMode instalado."
+        GAMEMODE_INSTALLED=1
+        if gamemoded -t 2>/dev/null; then
+            msg_ok "GameMode funcional verificado."
+        fi
+        return 0
+    fi
+    
+    msg_warn "Falha no apt. Tente: sudo add-apt-repository ppa:gamescope-dev/gamescope && sudo apt update && sudo apt install gamemode"
+    return 1
+}
+
+#===============================================================================
+# SEÇÃO 13 — MangoHud
+#===============================================================================
+
+install_mangohud() {
+    banner "MangoHUD"
+    
+    if has_cmd mangohud; then
+        msg_ok "MangoHUD já instalado: $(mangohud --version 2>/dev/null | head -1)"
+        MANGOHUD_INSTALLED=1
+        return 0
+    fi
+    
+    if ! confirm_installation "Instalar MangoHUD para monitoramento de desempenho (overlay FPS, GPU, CPU)?"; then
+        msg_info "MangoHUD pulado pelo usuário."
         return 1
     fi
-    msg_ok "Sistema operacional verificado"
     
-    if ! check_sudo; then
-        msg_warn "Sem permissões sudo. Algumas operações podem falhar."
+    if run_logged "Instalando MangoHUD" sudo apt-get install -y mangohud; then
+        msg_ok "MangoHUD instalado."
+        MANGOHUD_INSTALLED=1
+        msg_info "Uso: MANGOHUD=1 comando"
+        msg_info "Exemplo: MANGOHUD=1 steam"
+        msg_info "No Lutris: configure no runner Wine → 'MangoHUD' → habilitado"
+        return 0
     fi
-    msg_info "Verificando conexão com a internet..."
-    if ! check_internet; then
-        msg_warn "Sem conexão com a internet detectada. Algumas instalações podem falhar."
+    
+    msg_error "Falha ao instalar MangoHUD."
+    return 1
+}
+
+#===============================================================================
+# SEÇÃO 14 — Controladores
+#===============================================================================
+
+configure_controllers() {
+    banner "Controladores"
+    
+    msg_info "Verificando suporte a controladores..."
+    
+    if has_cmd jstest-gtk; then
+        msg_ok "jstest-gtk disponível para teste."
     fi
-    msg_ok "Conexão com a internet verificada"
     
-    # Detectar GPU
-    detect_gpu
+    if has_cmd gamecontrollerdb; then
+        msg_ok "SDL GameControllerDB disponível."
+    fi
     
-    # Verificar arquitetura
-    check_architecture
+    # xboxdrv - opcional, só para controles Xbox 360 antigos
+    if dpkg -l | grep -q xboxdrv 2>/dev/null; then
+        msg_info "xboxdrv instalado (suporte Xbox 360)."
+    fi
     
-    # Verificar suporte 32-bit
+    msg_ok "Suporte básico verificado. Linux reconhece a maioria dos controladores USB/Bluetooth plug-and-play."
+    msg_info "Para testar: jstest-gtk (GUI) ou 'cat /dev/input/js0' (bruto)."
+    return 0
+}
+
+#===============================================================================
+# SEÇÃO 15 — Diretórios de Jogos
+#===============================================================================
+
+create_game_directories() {
+    banner "Diretórios de Jogos"
+    
+    local dirs=("${HOME}/Games" "${HOME}/Games/Steam" "${HOME}/Games/Lutris" "${HOME}/Games/Other")
+    local missing=()
+    
+    for d in "${dirs[@]}"; do
+        [[ -d "$d" ]] || missing+=("$d")
+    done
+    
+    if [[ ${#missing[@]} -eq 0 ]]; then
+        msg_ok "Estrutura de diretórios já existe."
+        return 0
+    fi
+    
+    if confirm_installation "Criar estrutura de diretórios para jogos em ~/Games?"; then
+        for d in "${missing[@]}"; do
+            mkdir -p "$d"
+        done
+        msg_ok "Diretórios criados:"
+        for d in "${dirs[@]}"; do
+            msg_info "  $d"
+        done
+        return 0
+    fi
+    
+    msg_info "Criação de diretórios pulada."
+    return 1
+}
+
+#===============================================================================
+# SEÇÃO 16 — Diagnósticos
+#===============================================================================
+
+system_diagnostics() {
+    banner "GameKit Diagnostics"
+    
+    printf "OS:\n  Ubuntu %s (%s)\n" "${UBUNTU_VERSION}.04" "${UBUNTU_CODENAME}"
+    printf "Kernel:\n  %s\n" "$(uname -r)"
+    
+    printf "\nGPU:\n"
+    if [[ $GPU_NVIDIA -eq 1 ]]; then
+        printf "  %s\n" "${GPU_NAME:-NVIDIA (detectada)}"
+    else
+        printf "  Não detectada ou não-NVIDIA\n"
+    fi
+    
+    printf "\nNVIDIA Driver:\n"
+    if [[ $DRIVER_NVIDIA -eq 1 ]]; then
+        printf "  [OK] Versão: %s\n" "${DRIVER_VERSION:-desconhecida}"
+        printf "  Kernel module: %s\n" "$(lsmod | grep '^nvidia ' | awk '{print $1" "$3}' || echo 'NÃO CARREGADO')"
+    else
+        printf "  [FALHA] Driver não carregado\n"
+    fi
+    
+    printf "\nNVIDIA-SMI:\n"
+    if has_cmd nvidia-smi && nvidia-smi >/dev/null 2>&1; then
+        printf "  [OK]\n"
+        nvidia-smi --query-gpu=name,driver_version,memory.total,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | \
+        while IFS=',' read -r name drv mem temp; do
+            printf "    GPU: %s | Driver: %s | VRAM: %s MB | Temp: %s°C\n" "$name" "$drv" "$mem" "$temp"
+        done
+    else
+        printf "  [INDISPONÍVEL]\n"
+    fi
+    
+    printf "\nVulkan:\n"
+    if [[ $VULKAN_SUPPORT -eq 1 ]] && has_cmd vulkaninfo; then
+        printf "  [OK]\n"
+        vulkaninfo --summary 2>/dev/null | grep -i "device_name" | head -1 | sed 's/.*= /    GPU: /'
+        # Verifica ICD NVIDIA
+        if [[ -f /usr/share/vulkan/icd.d/nvidia_icd.json ]]; then
+            printf "    ICD NVIDIA: [OK]\n"
+        else
+            printf "    ICD NVIDIA: [AUSENTE]\n"
+        fi
+    else
+        printf "  [FALHA] vulkaninfo não funciona ou Vulkan não instalado\n"
+    fi
+    
+    printf "\n32-bit (i386):\n"
+    if [[ $THIRTYTWO_BIT -eq 1 ]]; then
+        printf "  [OK] Habilitado"
+        # Testa instalação real
+        if apt-cache policy libc6:i386 2>/dev/null | grep -q "Candidate:"; then
+            printf " (pacotes disponíveis)\n"
+        else
+            printf " (mas pacotes NÃO disponíveis!)\n"
+        fi
+    else
+        printf "  [NÃO HABILITADO]\n"
+    fi
+    
+    printf "\nSteam:\n"
+    if [[ $STEAM_INSTALLED -eq 1 ]] && has_cmd steam; then
+        printf "  [OK] Instalado\n"
+    else
+        printf "  [NÃO INSTALADO]\n"
+    fi
+    
+    printf "\nLutris:\n"
+    if [[ $LUTRIS_INSTALLED -eq 1 ]] && (has_cmd lutris || flatpak list --system --columns=application 2>/dev/null | grep -q lutris); then
+        printf "  [OK] Instalado\n"
+    else
+        printf "  [NÃO INSTALADO]\n"
+    fi
+    
+    printf "\nWine:\n"
+    if [[ $WINE_INSTALLED -eq 1 ]] && has_cmd wine; then
+        printf "  [OK] %s\n" "$(wine --version 2>/dev/null | head -1)"
+        has_cmd wine64 && printf "    wine64: [OK]\n" || printf "    wine64: [AUSENTE]\n"
+    else
+        printf "  [NÃO INSTALADO]\n"
+    fi
+    
+    printf "\nWinetricks:\n"
+    if [[ $WINETRICKS_INSTALLED -eq 1 ]] && has_cmd winetricks; then
+        printf "  [OK] %s\n" "$(winetricks --version 2>/dev/null | head -1)"
+    else
+        printf "  [NÃO INSTALADO]\n"
+    fi
+    
+    printf "\nGameMode:\n"
+    if [[ $GAMEMODE_INSTALLED -eq 1 ]] && has_cmd gamemoded; then
+        printf "  [OK] Instalado"
+        gamemoded -t 2>/dev/null && printf " (funcional)\n" || printf " (gamemoded -t FALHOU)\n"
+    else
+        printf "  [NÃO INSTALADO]\n"
+    fi
+    
+    printf "\nMangoHUD:\n"
+    if [[ $MANGOHUD_INSTALLED -eq 1 ]] && has_cmd mangohud; then
+        printf "  [OK] %s\n" "$(mangohud --version 2>/dev/null | head -1)"
+    else
+        printf "  [NÃO INSTALADO]\n"
+    fi
+}
+
+nvidia_diagnostics() {
+    banner "Diagnóstico NVIDIA Detalhado"
+    
+    if [[ $GPU_NVIDIA -eq 0 ]]; then
+        msg_error "GPU NVIDIA não detectada."
+        return 1
+    fi
+    
+    printf "GPU:\n"
+    nvidia-smi --query-gpu=name --format=csv,noheader,nounits 2>/dev/null | while read -r name; do
+        printf "  %s\n" "$name"
+    done
+    
+    printf "\nDriver:\n"
+    nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits 2>/dev/null | while read -r ver; do
+        printf "  %s\n" "$ver"
+    done
+    
+    printf "\nVRAM:\n"
+    nvidia-smi --query-gpu=memory.total,memory.used,memory.free --format=csv,noheader,nounits 2>/dev/null | while IFS=',' read -r total used free; do
+        printf "  Total: %s MB | Usado: %s MB | Livre: %s MB\n" "$total" "$used" "$free"
+    done
+    
+    printf "\nUtilização:\n"
+    nvidia-smi --query-gpu=utilization.gpu,utilization.memory --format=csv,noheader,nounits 2>/dev/null | while IFS=',' read -r gpu mem; do
+        printf "  GPU: %s%% | Memória: %s%%\n" "$gpu" "$mem"
+    done
+    
+    printf "\nTemperatura:\n"
+    nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits 2>/dev/null | while read -r temp; do
+        printf "  %s°C\n" "$temp"
+    done
+    
+    printf "\nMódulos kernel:\n"
+    lsmod | grep -E 'nvidia|drm' | while read -r line; do
+        printf "  %s\n" "$line"
+    done
+    
+    printf "\nVulkan ICD:\n"
+    if [[ -f /usr/share/vulkan/icd.d/nvidia_icd.json ]]; then
+        printf "  [OK] /usr/share/vulkan/icd.d/nvidia_icd.json\n"
+    else
+        printf "  [AUSENTE] ICD NVIDIA não encontrado\n"
+    fi
+}
+
+#===============================================================================
+# SEÇÃO 17 — Serviços (stub)
+#===============================================================================
+
+start_services() {
+    msg_info "Iniciando serviços de jogos..."
+    # gamemoded é socket-activated, não precisa start manual
+    # steam não roda como serviço
+    msg_ok "Nenhum serviço systemd necessário (gamemode é socket-activated)."
+}
+
+stop_services() {
+    msg_info "Parando serviços..."
+    msg_ok "Nenhum serviço para parar."
+}
+
+check_services() {
+    msg_info "Status dos serviços:"
+    systemctl --user status gamemoded 2>/dev/null | head -5 || msg_info "gamemoded: socket-activated (systemd user)"
+}
+
+#===============================================================================
+# SEÇÃO 18 — Resumo Final
+#===============================================================================
+
+summary() {
+    banner "GameKit Installation Summary"
+    
+    printf "GPU:\n"
+    [[ $GPU_NVIDIA -eq 1 ]] && printf "  [OK] %s\n" "${GPU_NAME:-NVIDIA}" || printf "  [INFO] Não detectada\n"
+    [[ $DRIVER_NVIDIA -eq 1 ]] && printf "  [OK] Driver NVIDIA %s\n" "${DRIVER_VERSION:-?}" || printf "  [AVISO] Driver não configurado\n"
+    
+    printf "\nVulkan:\n"
+    [[ $VULKAN_SUPPORT -eq 1 ]] && printf "  [OK] Funcionando\n" || printf "  [AVISO] Não configurado\n"
+    
+    printf "\n32-bit:\n"
+    [[ $THIRTYTWO_BIT -eq 1 ]] && printf "  [OK] i386 habilitado\n" || printf "  [AVISO] Não habilitado\n"
+    
+    printf "\nGaming:\n"
+    [[ $STEAM_INSTALLED -eq 1 ]] && printf "  [OK] Steam\n" || printf "  [INFO] Steam não instalado\n"
+    [[ $LUTRIS_INSTALLED -eq 1 ]] && printf "  [OK] Lutris\n" || printf "  [INFO] Lutris não instalado\n"
+    [[ $WINE_INSTALLED -eq 1 ]] && printf "  [OK] Wine\n" || printf "  [INFO] Wine não instalado\n"
+    [[ $WINETRICKS_INSTALLED -eq 1 ]] && printf "  [OK] Winetricks\n" || printf "  [INFO] Winetricks não instalado\n"
+    [[ $GAMEMODE_INSTALLED -eq 1 ]] && printf "  [OK] GameMode\n" || printf "  [INFO] GameMode não instalado\n"
+    [[ $MANGOHUD_INSTALLED -eq 1 ]] && printf "  [OK] MangoHUD\n" || printf "  [INFO] MangoHUD não instalado\n"
+    
+    printf "\n-----------------------------------------\n"
+    [[ $ERRORS -gt 0 ]] && msg_error "Erros detectados: $ERRORS"
+    [[ $SKIPPED -gt 0 ]] && msg_warn "Componentes ignorados: $SKIPPED"
+    
+    printf "\nLog completo:\n  %s\n" "$LOG_FILE"
+    printf "\nPróximos passos:\n"
+    [[ $DRIVER_NVIDIA -eq 1 ]] && printf "  • REINICIE o sistema para ativar driver NVIDIA\n"
+    [[ $STEAM_INSTALLED -eq 1 ]] && printf "  • Abra Steam e ative Steam Play (Proton) nas configurações\n"
+    [[ $LUTRIS_INSTALLED -eq 1 ]] && printf "  • Abra Lutris e configure runners Wine se necessário\n"
+    [[ $GAMEMODE_INSTALLED -eq 1 ]] && printf "  • Use 'gamemoderun ./jogo' ou adicione 'gamemoderun %%command%%' nas opções de lançamento do Steam\n"
+    [[ $MANGOHUD_INSTALLED -eq 1 ]] && printf "  • Use 'MANGOHUD=1 comando' ou habilite no Lutris/Steam\n"
+}
+
+#===============================================================================
+# SEÇÃO 19 — Main
+#===============================================================================
+
+main() {
+    # Inicializa log
+    >"${LOG_FILE}"
+    log_message "START" "GameKit v${KIT_VERSION} iniciado por ${USER} (UID $(id -u))"
+    log_message "INFO" "Sistema: $(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')"
+    
+    banner "Ubuntu GameKit v${KIT_VERSION}"
+    printf "Preparação de ambiente para jogos em Ubuntu com NVIDIA\n\n"
+    
+    # Verificações obrigatórias
+    check_root
+    check_os || exit 1
+    check_sudo || exit 1
+    check_internet || exit 1
+    
+    # Detecta hardware GPU
+    detect_gpu_hardware
+    
+    # 32-bit (essencial para quase tudo)
     check_32bit_support
     
-    # Criar estrutura de diretórios (perguntar)
+    # Diretórios
     create_game_directories
     
     # Menu interativo
     local choice
     while true; do
-        printf "${COLOR_CYAN}1${COLOR_RESET} - Configuração completa\n"
-        printf "${COLOR_CYAN}2${COLOR_RESET} - Escolher componentes\n"
-        printf "${COLOR_CYAN}3${COLOR_RESET} - Diagnóstico do sistema\n"
-        printf "${COLOR_CYAN}4${COLOR_RESET} - Verificar GPU / Vulkan\n"
-        printf "${COLOR_CYAN}5${COLOR_RESET} - Gerenciar serviços\n"
-        printf "${COLOR_CYAN}6${COLOR_RESET} - Sair\n"
-        printf ">${COLOR_RESET} "
-        read -r choice
+        printf '\n%s=========================================%s\n' "${COLOR_BOLD}" "${COLOR_RESET}"
+        printf '%s %s v%s%s\n' "${COLOR_BOLD}" "${KIT_NAME}" "${KIT_VERSION}" "${COLOR_RESET}"
+        printf '%s=========================================%s\n\n' "${COLOR_BOLD}" "${COLOR_RESET}"
+        printf 'Escolha uma opção:\n\n'
+        printf '  %s1%s - Configuração completa (recomendado)\n' "${COLOR_GREEN}" "${COLOR_RESET}"
+        printf '  %s2%s - Escolher componentes individualmente\n' "${COLOR_GREEN}" "${COLOR_RESET}"
+        printf '  %s3%s - Diagnóstico do sistema\n' "${COLOR_BLUE}" "${COLOR_RESET}"
+        printf '  %s4%s - Diagnóstico NVIDIA detalhado\n' "${COLOR_BLUE}" "${COLOR_RESET}"
+        printf '  %s5%s - Serviços (status)\n' "${COLOR_CYAN}" "${COLOR_RESET}"
+        printf '  %s6%s - Sair\n\n' "${COLOR_RED}" "${COLOR_RESET}"
+        printf '> '
+        read -r choice || choice=6
         
         case "${choice}" in
             1) # Configuração completa
                 printf "\n"
-                
-                # NVIDIA
                 configure_nvidia
-                
-                # 32-bit
-                if [ ${THIRTYTWO_BIT} -ne 1 ]; then
-                    check_32bit_support
-                fi
-                
-                # Vulkan
+                [[ $THIRTYTWO_BIT -ne 1 ]] && check_32bit_support
                 install_vulkan
                 
-                # Steam
-                if confirm_installation "steam" "Deseja instalar o Steam?"; then
+                if confirm_installation "Instalar Steam?"; then
                     install_steam
-                else
-                    msg_info "Steam ignorado pelo usuário."
                 fi
                 
-                # Proton
-                if [ ${STEAM_INSTALLED} -eq 1 ]; then
-                    configure_proton
-                fi
+                [[ $STEAM_INSTALLED -eq 1 ]] && configure_proton
                 
-                # Lutris
-                if confirm_installation "lutris" "Deseja instalar o Lutris?"; then
+                if confirm_installation "Instalar Lutris?"; then
                     install_lutris
-                else
-                    msg_info "Lutris ignorado pelo usuário."
                 fi
                 
-                # Wine
-                if [ ${LUTRIS_INSTALLED} -eq 0 ]; then
-                    if confirm_installation "wine" "Deseja instalar o Wine?"; then
-                        install_wine
-                    else
-                        msg_info "Wine ignorado pelo usuário."
-                    fi
+                if [[ $LUTRIS_INSTALLED -eq 0 ]] && confirm_installation "Instalar Wine?"; then
+                    install_wine
+                elif [[ $LUTRIS_INSTALLED -eq 1 ]] && confirm_installation "Garantir Wine/winetricks para Lutris?"; then
+                    install_wine
                 fi
                 
-                # Winetricks
-                if [ ${WINE_INSTALLED} -eq 1 ] || [ ${LUTRIS_INSTALLED} -eq 1 ]; then
-                    if confirm_installation "winetricks" "Deseja instalar o Winetricks?"; then
-                        install_winetricks
-                    else
-                        msg_info "Winetricks ignorado pelo usuário."
-                    fi
+                if [[ $WINE_INSTALLED -eq 1 || $LUTRIS_INSTALLED -eq 1 ]] && confirm_installation "Instalar Winetricks?"; then
+                    install_winetricks
                 fi
                 
-                # GameMode
-                if confirm_installation "gamemode" "Deseja instalar o GameMode para otimização de jogos?"; then
+                if confirm_installation "Instalar GameMode?"; then
                     install_gamemode
-                else
-                    msg_info "GameMode ignorado pelo usuário."
                 fi
                 
-                # MangoHUD
-                if confirm_installation "mangohud" "Deseja instalar o MangoHUD para monitoramento?"; then
+                if confirm_installation "Instalar MangoHUD?"; then
                     install_mangohud
-                else
-                    msg_info "MangoHUD ignorado pelo usuário."
                 fi
                 
-                # DXVK e VKD3D
-                configure_dxvk
-                configure_vkd3d
-                
-                # Controladores
+                info_dxvk
+                info_vkd3d
                 configure_controllers
-                
-                # Summary
                 summary
                 ;;
-                
-            2) # Escolher componentes individualmente
+            
+            2) # Componentes individuais
                 printf "\n"
-                
-                # NVIDIA
-                if confirm_installation "nvidia" "Deseja configurar suporte NVIDIA?"; then
-                    configure_nvidia
-                else
-                    msg_info "Configuração NVIDIA ignorada."
-                fi
-                
-                # 32-bit
-                if [ ${THIRTYTWO_BIT} -ne 1 ]; then
-                    if confirm_installation "i386" "Deseja habilitar arquitetura i386?"; then
-                        check_32bit_support
-                    fi
-                fi
-                
-                # Vulkan
-                if confirm_installation "vulkan" "Deseja instalar/verificar Vulkan?"; then
-                    install_vulkan
-                fi
-                
-                # Steam
-                if confirm_installation "steam" "Deseja instalar o Steam?"; then
-                    install_steam
-                else
-                    msg_info "Steam ignorado."
-                fi
-                
-                # Proton
-                if [ ${STEAM_INSTALLED} -eq 1 ] && confirm_installation "proton" "Deseja configurar Steam Play (Proton)?"; then
-                    configure_proton
-                fi
-                
-                # Lutris
-                if confirm_installation "lutris" "Deseja instalar o Lutris?"; then
-                    install_lutris
-                else
-                    msg_info "Lutris ignorado."
-                fi
-                
-                # Wine
-                if [ ${LUTRIS_INSTALLED} -eq 0 ] && confirm_installation "wine" "Deseja instalar o Wine?"; then
-                    install_wine
-                elif [ ${LUTRIS_INSTALLED} -eq 1 ] && confirm_installation "wine" "Deseja garantir suporte Wine para Lutris?"; then
-                    install_wine
-                else
-                    msg_info "Wine ignorado."
-                fi
-                
-                # Winetricks
-                if [ ${WINE_INSTALLED} -eq 1 ] || [ ${LUTRIS_INSTALLED} -eq 1 ]; then
-                    if confirm_installation "winetricks" "Deseja instalar o Winetricks?"; then
-                        install_winetricks
-                    fi
-                fi
-                
-                # GameMode
-                if confirm_installation "gamemode" "Deseja instalar o GameMode?"; then
-                    install_gamemode
-                else
-                    msg_info "GameMode ignorado."
-                fi
-                
-                # MangoHUD
-                if confirm_installation "mangohud" "Deseja instalar o MangoHUD?"; then
-                    install_mangohud
-                else
-                    msg_info "MangoHUD ignorado."
-                fi
-                
-                # Summary
+                if confirm_installation "Configurar NVIDIA?"; then configure_nvidia; fi
+                [[ $THIRTYTWO_BIT -ne 1 ]] && if confirm_installation "Habilitar i386?"; then check_32bit_support; fi
+                if confirm_installation "Instalar/verificar Vulkan?"; then install_vulkan; fi
+                if confirm_installation "Instalar Steam?"; then install_steam; fi
+                [[ $STEAM_INSTALLED -eq 1 ]] && if confirm_installation "Configurar Proton?"; then configure_proton; fi
+                if confirm_installation "Instalar Lutris?"; then install_lutris; fi
+                if [[ $LUTRIS_INSTALLED -eq 0 ]] && confirm_installation "Instalar Wine?"; then install_wine
+                elif [[ $LUTRIS_INSTALLED -eq 1 ]] && confirm_installation "Garantir Wine para Lutris?"; then install_wine; fi
+                if [[ $WINE_INSTALLED -eq 1 || $LUTRIS_INSTALLED -eq 1 ]] && confirm_installation "Instalar Winetricks?"; then install_winetricks; fi
+                if confirm_installation "Instalar GameMode?"; then install_gamemode; fi
+                if confirm_installation "Instalar MangoHUD?"; then install_mangohud; fi
                 summary
                 ;;
-                
-            3) # Diagnóstico do sistema
-                system_diagnostics
+            
+            3) system_diagnostics ;;
+            4) nvidia_diagnostics ;;
+            5) 
+                printf "\nServiços:\n"
+                printf "1 - Status\n"
+                printf "2 - Voltar\n> "
+                read -r svc
+                case "$svc" in 1) check_services ;; 2) continue ;; *) msg_warn "Opção inválida" ;; esac
                 ;;
-                
-            4) # Verificar GPU / Vulkan
-                nvidia_diagnostics
-                printf "\n"
-                if command -v vulkaninfo >/dev/null 2>&1; then
-                    vulkaninfo 2>/dev/null | grep -E "device_name|vendor"
-                fi
-                ;;
-                
-            5) # Gerenciar serviços
-                printf "\nSubmenu de Serviços:\n"
-                printf "1 - Iniciar serviços\n"
-                printf "2 - Parar serviços\n"
-                printf "3 - Status\n"
-                printf "4 - Voltar\n"
-                printf ">${COLOR_RESET} "
-                read -r svc_choice
-                case "${svc_choice}" in
-                    1) start_services ;;
-                    2) stop_services ;;
-                    3) check_services ;;
-                    4) continue ;;
-                    *) printf "Opção inválida.\n" ;;
-                esac
-                ;;
-                
-            6) # Sair
+            6) 
                 printf "\nAté mais!\n"
                 summary
-                return 0
+                break
                 ;;
-                
-            * ) printf "Opção inválida. Por favor, escolha 1, 2, 3, 4, 5 ou 6.\n";;
+            *) msg_warn "Opção inválida. Escolha 1-6." ;;
         esac
     done
     
-    return 0
+    # Cleanup
+    [[ -n "${SUDO_KEEPALIVE_PID:-}" ]] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null
+    log_message "END" "GameKit finalizado. Erros: $ERRORS | Ignorados: $SKIPPED"
 }
 
 #===============================================================================
-# SEÇÃO 22 — Executar script
+# Entry
 #===============================================================================
 
-# Verificar se o script está sendo executado diretamente
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
 fi
