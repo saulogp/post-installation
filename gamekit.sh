@@ -69,8 +69,6 @@ export STEAM_INSTALLED=0
 export LUTRIS_INSTALLED=0
 export WINE_INSTALLED=0
 export WINETRICKS_INSTALLED=0
-export GAMEMODE_INSTALLED=0
-export MANGOHUD_INSTALLED=0
 export ERRORS=0
 export SKIPPED=0
 
@@ -764,70 +762,7 @@ info_vkd3d() {
 }
 
 #===============================================================================
-# SEÇÃO 12 — GameMode
-#===============================================================================
-
-install_gamemode() {
-    banner "GameMode"
-    
-    if has_cmd gamemoded; then
-        msg_ok "GameMode já instalado."
-        GAMEMODE_INSTALLED=1
-        # Testa se funciona
-        if gamemoded -t 2>/dev/null; then
-            msg_ok "GameMode funcional (gamemoded -t OK)."
-        else
-            msg_warn "GameMode instalado mas gamemoded -t falhou."
-        fi
-        return 0
-    fi
-    
-    if run_logged "Instalando GameMode" sudo apt-get install -y gamemode; then
-        msg_ok "GameMode instalado."
-        GAMEMODE_INSTALLED=1
-        if gamemoded -t 2>/dev/null; then
-            msg_ok "GameMode funcional verificado."
-        fi
-        return 0
-    fi
-    
-    msg_warn "Falha no apt. Tente: sudo add-apt-repository ppa:gamescope-dev/gamescope && sudo apt update && sudo apt install gamemode"
-    return 1
-}
-
-#===============================================================================
-# SEÇÃO 13 — MangoHud
-#===============================================================================
-
-install_mangohud() {
-    banner "MangoHUD"
-    
-    if has_cmd mangohud; then
-        msg_ok "MangoHUD já instalado: $(mangohud --version 2>/dev/null | head -1)"
-        MANGOHUD_INSTALLED=1
-        return 0
-    fi
-    
-    if ! confirm_installation "Instalar MangoHUD para monitoramento de desempenho (overlay FPS, GPU, CPU)?"; then
-        msg_info "MangoHUD pulado pelo usuário."
-        return 1
-    fi
-    
-    if run_logged "Instalando MangoHUD" sudo apt-get install -y mangohud; then
-        msg_ok "MangoHUD instalado."
-        MANGOHUD_INSTALLED=1
-        msg_info "Uso: MANGOHUD=1 comando"
-        msg_info "Exemplo: MANGOHUD=1 steam"
-        msg_info "No Lutris: configure no runner Wine → 'MangoHUD' → habilitado"
-        return 0
-    fi
-    
-    msg_error "Falha ao instalar MangoHUD."
-    return 1
-}
-
-#===============================================================================
-# SEÇÃO 14 — Controladores
+# SEÇÃO 12 — Controladores
 #===============================================================================
 
 configure_controllers() {
@@ -1184,8 +1119,6 @@ summary() {
     (has_cmd lutris || flatpak list --system --columns=application 2>/dev/null | grep -q lutris) && printf "  [OK] Lutris\n" || printf "  [INFO] Lutris não instalado\n"
     has_cmd wine && printf "  [OK] Wine\n" || printf "  [INFO] Wine não instalado\n"
     has_cmd winetricks && printf "  [OK] Winetricks\n" || printf "  [INFO] Winetricks não instalado\n"
-    has_cmd gamemoded && printf "  [OK] GameMode\n" || printf "  [INFO] GameMode não instalado\n"
-    has_cmd mangohud && printf "  [OK] MangoHUD\n" || printf "  [INFO] MangoHUD não instalado\n"
     
     printf "\n-----------------------------------------\n"
     [[ $ERRORS -gt 0 ]] && msg_error "Erros detectados: $ERRORS"
@@ -1196,8 +1129,6 @@ summary() {
     [[ $driver_nvidia -eq 1 ]] && printf "  • REINICIE o sistema para ativar driver NVIDIA\n"
     has_cmd steam && printf "  • Abra Steam e ative Steam Play (Proton) nas configurações\n"
     (has_cmd lutris || flatpak list --system --columns=application 2>/dev/null | grep -q lutris) && printf "  • Abra Lutris e configure runners Wine se necessário\n"
-    has_cmd gamemoded && printf "  • Use 'gamemoderun ./jogo' ou adicione 'gamemoderun %%command%%' nas opções de lançamento do Steam\n"
-    has_cmd mangohud && printf "  • Use 'MANGOHUD=1 comando' ou habilite no Lutris/Steam\n"
 }
 
 #===============================================================================
@@ -1271,14 +1202,6 @@ main() {
                     install_winetricks
                 fi
                 
-                if confirm_installation "Instalar GameMode?"; then
-                    install_gamemode
-                fi
-                
-                if confirm_installation "Instalar MangoHUD?"; then
-                    install_mangohud
-                fi
-                
                 info_dxvk
                 info_vkd3d
                 configure_controllers
@@ -1296,8 +1219,6 @@ main() {
                 if [[ $LUTRIS_INSTALLED -eq 0 ]] && confirm_installation "Instalar Wine?"; then install_wine
                 elif [[ $LUTRIS_INSTALLED -eq 1 ]] && confirm_installation "Garantir Wine para Lutris?"; then install_wine; fi
                 if [[ $WINE_INSTALLED -eq 1 || $LUTRIS_INSTALLED -eq 1 ]] && confirm_installation "Instalar Winetricks?"; then install_winetricks; fi
-                if confirm_installation "Instalar GameMode?"; then install_gamemode; fi
-                if confirm_installation "Instalar MangoHUD?"; then install_mangohud; fi
                 summary
                 ;;
             
