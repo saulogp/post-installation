@@ -588,7 +588,8 @@ configure_proton() {
 install_lutris() {
     banner "Lutris"
     
-    if has_cmd lutris; then
+    # Verifica se já instalado (apt ou flatpak)
+    if has_cmd lutris || flatpak list --system --columns=application 2>/dev/null | grep -q lutris; then
         msg_ok "Lutris já instalado."
         LUTRIS_INSTALLED=1
         return 0
@@ -596,40 +597,33 @@ install_lutris() {
     
     local installed=0
     
-    # Ubuntu 24.04: PPA lutris/lutris não tem build para noble ainda
-    if [[ "$UBUNTU_VERSION" == "24" ]]; then
-        msg_info "Ubuntu 24.04 detectado: PPA Lutris não tem build para noble. Usando Flatpak."
-    else
-        # Tenta PPA para 22.04
-        msg_info "Adicionando PPA Lutris..."
-        if run_logged "Adicionando PPA lutris/lutris" sudo add-apt-repository -y ppa:lutris/lutris; then
-            run_logged "Atualizando lista" sudo apt-get update -y
-            if run_logged "Instalando Lutris via apt" sudo apt-get install -y lutris; then
+    # Método recomendado: Flatpak (funciona em 22.04 e 24.04)
+    msg_info "Instalando Lutris via Flatpak (recomendado)..."
+    
+    if ! has_cmd flatpak; then
+        run_logged "Instalando Flatpak" sudo apt-get install -y flatpak
+    fi
+    
+    if has_cmd flatpak; then
+        # Garante Flathub
+        run_logged "Adicionando Flathub" flatpak remote-add --if-not-exists --system flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+        
+        # ID atual do Lutris no Flathub
+        if run_logged "Instalando net.lutris.Lutris via Flatpak" flatpak install -y --system flathub net.lutris.Lutris; then
+            if flatpak list --system --columns=application 2>/dev/null | grep -q lutris; then
                 installed=1
             fi
         fi
     fi
     
-    # Fallback Flatpak
-    if [[ $installed -eq 0 ]]; then
-        msg_info "Tentando instalação via Flatpak..."
-        
-        if ! has_cmd flatpak; then
-            run_logged "Instalando Flatpak" sudo apt-get install -y flatpak
-        fi
-        
-        if has_cmd flatpak; then
-            run_logged "Adicionando Flathub" flatpak remote-add --if-not-exists --system flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-            
-            # Tenta IDs conhecidos
-            for app_id in "org.lutris.Lutris" "net.lutris.Lutris"; do
-                if run_logged "Instalando $app_id via Flatpak" flatpak install -y --system flathub "$app_id"; then
-                    if flatpak list --system --columns=application | grep -q lutris; then
-                        installed=1
-                        break
-                    fi
-                fi
-            done
+    # Fallback: PPA (apenas Ubuntu 22.04, se flatpak falhou)
+    if [[ $installed -eq 0 && "$UBUNTU_VERSION" == "22" ]]; then
+        msg_warn "Flatpak falhou. Tentando PPA lutris/lutris (apenas Ubuntu 22.04)..."
+        if run_logged "Adicionando PPA lutris/lutris" sudo add-apt-repository -y ppa:lutris/lutris; then
+            run_logged "Atualizando lista" sudo apt-get update -y
+            if run_logged "Instalando Lutris via apt" sudo apt-get install -y lutris; then
+                installed=1
+            fi
         fi
     fi
     
@@ -645,7 +639,8 @@ install_lutris() {
         return 0
     fi
     
-    msg_error "Não foi possível instalar Lutris (PPA e Flatpak falharam)."
+    msg_error "Não foi possível instalar Lutris (Flatpak e PPA falharam)."
+    msg_info "Tente manualmente: flatpak install flathub net.lutris.Lutris"
     return 1
 }
 
