@@ -558,12 +558,8 @@ configure_proton() {
         libcurl4:i386
     )
     
-    # libssl depende da versão
-    if [[ "$UBUNTU_VERSION" == "24" ]]; then
-        proton_pkgs+=(libssl3:i386)
-    else
-        proton_pkgs+=(libssl1.1:i386)
-    fi
+    # libssl - usa libssl3 que está disponível em ambas as versões
+    proton_pkgs+=(libssl3:i386)
     
     # Tenta instalar todos
     local failed=0
@@ -892,19 +888,53 @@ create_game_directories() {
 system_diagnostics() {
     banner "GameKit Diagnostics"
     
-    printf "OS:\n  Ubuntu %s (%s)\n" "${UBUNTU_VERSION}.04" "${UBUNTU_CODENAME}"
+    # Recarrega info do sistema
+    local os_name="" os_version="" os_codename=""
+    if [[ -r /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        os_name="${ID:-unknown}"
+        os_version="${VERSION_ID%%.*}"
+        os_codename="${VERSION_CODENAME:-}"
+    fi
+    
+    printf "OS:\n  %s %s (%s)\n" "$os_name" "$os_version" "$os_codename"
     printf "Kernel:\n  %s\n" "$(uname -r)"
     
+    # Detecta GPU no momento
+    local gpu_name=""
+    local gpu_nvidia=0
+    if has_cmd lspci; then
+        local gpu_line
+        gpu_line=$(lspci | grep -i -E 'vga|3d|display' | head -1)
+        if echo "$gpu_line" | grep -qi nvidia; then
+            gpu_nvidia=1
+            gpu_name=$(echo "$gpu_line" | sed 's/.*: //')
+        fi
+    fi
+    
     printf "\nGPU:\n"
-    if [[ $GPU_NVIDIA -eq 1 ]]; then
-        printf "  %s\n" "${GPU_NAME:-NVIDIA (detectada)}"
+    if [[ $gpu_nvidia -eq 1 ]]; then
+        printf "  %s\n" "$gpu_name"
     else
         printf "  Não detectada ou não-NVIDIA\n"
     fi
     
+    # Verifica driver NVIDIA no momento
+    local driver_nvidia=0
+    local driver_version=""
+    if has_cmd nvidia-smi; then
+        local smi_output
+        smi_output=$(nvidia-smi 2>&1)
+        if [[ $? -eq 0 ]] && lsmod | grep -q '^nvidia '; then
+            driver_nvidia=1
+            driver_version=$(echo "$smi_output" | grep 'Driver Version' | sed 's/.*: //' | awk '{print $1}')
+        fi
+    fi
+    
     printf "\nNVIDIA Driver:\n"
-    if [[ $DRIVER_NVIDIA -eq 1 ]]; then
-        printf "  [OK] Versão: %s\n" "${DRIVER_VERSION:-desconhecida}"
+    if [[ $driver_nvidia -eq 1 ]]; then
+        printf "  [OK] Versão: %s\n" "$driver_version"
         printf "  Kernel module: %s\n" "$(lsmod | grep '^nvidia ' | awk '{print $1" "$3}' || echo 'NÃO CARREGADO')"
     else
         printf "  [FALHA] Driver não carregado\n"
@@ -921,11 +951,22 @@ system_diagnostics() {
         printf "  [INDISPONÍVEL]\n"
     fi
     
+    # Verifica Vulkan no momento
+    local vulkan_ok=0
+    local vulkan_gpu=""
+    if has_cmd vulkaninfo; then
+        local vk_test
+        vk_test=$(vulkaninfo --summary 2>&1)
+        if [[ $? -eq 0 ]] && echo "$vk_test" | grep -qi "device_name"; then
+            vulkan_ok=1
+            vulkan_gpu=$(echo "$vk_test" | grep -i "device_name" | head -1 | sed 's/.*= //')
+        fi
+    fi
+    
     printf "\nVulkan:\n"
-    if [[ $VULKAN_SUPPORT -eq 1 ]] && has_cmd vulkaninfo; then
+    if [[ $vulkan_ok -eq 1 ]]; then
         printf "  [OK]\n"
-        vulkaninfo --summary 2>/dev/null | grep -i "device_name" | head -1 | sed 's/.*= /    GPU: /'
-        # Verifica ICD NVIDIA
+        printf "    GPU: %s\n" "$vulkan_gpu"
         if [[ -f /usr/share/vulkan/icd.d/nvidia_icd.json ]]; then
             printf "    ICD NVIDIA: [OK]\n"
         else
@@ -935,35 +976,38 @@ system_diagnostics() {
         printf "  [FALHA] vulkaninfo não funciona ou Vulkan não instalado\n"
     fi
     
-    printf "\n32-bit (i386):\n"
-    if [[ $THIRTYTWO_BIT -eq 1 ]]; then
-        printf "  [OK] Habilitado"
-        # Testa instalação real
+    # Verifica 32-bit no momento
+    local i386_ok=0
+    if dpkg --print-foreign-architectures 2>/dev/null | grep -qx i386; then
         if apt-cache policy libc6:i386 2>/dev/null | grep -q "Candidate:"; then
-            printf " (pacotes disponíveis)\n"
-        else
-            printf " (mas pacotes NÃO disponíveis!)\n"
+            i386_ok=1
         fi
+    fi
+    
+    printf "\n32-bit (i386):\n"
+    if [[ $i386_ok -eq 1 ]]; then
+        printf "  [OK] Habilitado (pacotes disponíveis)\n"
     else
         printf "  [NÃO HABILITADO]\n"
     fi
     
+    # Verifica apps instalados no momento
     printf "\nSteam:\n"
-    if [[ $STEAM_INSTALLED -eq 1 ]] && has_cmd steam; then
+    if has_cmd steam; then
         printf "  [OK] Instalado\n"
     else
         printf "  [NÃO INSTALADO]\n"
     fi
     
     printf "\nLutris:\n"
-    if [[ $LUTRIS_INSTALLED -eq 1 ]] && (has_cmd lutris || flatpak list --system --columns=application 2>/dev/null | grep -q lutris); then
+    if has_cmd lutris || flatpak list --system --columns=application 2>/dev/null | grep -q lutris; then
         printf "  [OK] Instalado\n"
     else
         printf "  [NÃO INSTALADO]\n"
     fi
     
     printf "\nWine:\n"
-    if [[ $WINE_INSTALLED -eq 1 ]] && has_cmd wine; then
+    if has_cmd wine; then
         printf "  [OK] %s\n" "$(wine --version 2>/dev/null | head -1)"
         has_cmd wine64 && printf "    wine64: [OK]\n" || printf "    wine64: [AUSENTE]\n"
     else
@@ -971,14 +1015,14 @@ system_diagnostics() {
     fi
     
     printf "\nWinetricks:\n"
-    if [[ $WINETRICKS_INSTALLED -eq 1 ]] && has_cmd winetricks; then
+    if has_cmd winetricks; then
         printf "  [OK] %s\n" "$(winetricks --version 2>/dev/null | head -1)"
     else
         printf "  [NÃO INSTALADO]\n"
     fi
     
     printf "\nGameMode:\n"
-    if [[ $GAMEMODE_INSTALLED -eq 1 ]] && has_cmd gamemoded; then
+    if has_cmd gamemoded; then
         printf "  [OK] Instalado"
         gamemoded -t 2>/dev/null && printf " (funcional)\n" || printf " (gamemoded -t FALHOU)\n"
     else
@@ -986,7 +1030,7 @@ system_diagnostics() {
     fi
     
     printf "\nMangoHUD:\n"
-    if [[ $MANGOHUD_INSTALLED -eq 1 ]] && has_cmd mangohud; then
+    if has_cmd mangohud; then
         printf "  [OK] %s\n" "$(mangohud --version 2>/dev/null | head -1)"
     else
         printf "  [NÃO INSTALADO]\n"
@@ -996,7 +1040,17 @@ system_diagnostics() {
 nvidia_diagnostics() {
     banner "Diagnóstico NVIDIA Detalhado"
     
-    if [[ $GPU_NVIDIA -eq 0 ]]; then
+    # Detecta GPU no momento
+    local gpu_nvidia=0
+    if has_cmd lspci; then
+        local gpu_line
+        gpu_line=$(lspci | grep -i -E 'vga|3d|display' | head -1)
+        if echo "$gpu_line" | grep -qi nvidia; then
+            gpu_nvidia=1
+        fi
+    fi
+    
+    if [[ $gpu_nvidia -eq 0 ]]; then
         msg_error "GPU NVIDIA não detectada."
         return 1
     fi
@@ -1067,23 +1121,65 @@ check_services() {
 summary() {
     banner "GameKit Installation Summary"
     
+    # Detecta GPU no momento
+    local gpu_name=""
+    local gpu_nvidia=0
+    if has_cmd lspci; then
+        local gpu_line
+        gpu_line=$(lspci | grep -i -E 'vga|3d|display' | head -1)
+        if echo "$gpu_line" | grep -qi nvidia; then
+            gpu_nvidia=1
+            gpu_name=$(echo "$gpu_line" | sed 's/.*: //')
+        fi
+    fi
+    
+    # Verifica driver NVIDIA no momento
+    local driver_nvidia=0
+    local driver_version=""
+    if has_cmd nvidia-smi; then
+        local smi_output
+        smi_output=$(nvidia-smi 2>&1)
+        if [[ $? -eq 0 ]] && lsmod | grep -q '^nvidia '; then
+            driver_nvidia=1
+            driver_version=$(echo "$smi_output" | grep 'Driver Version' | sed 's/.*: //' | awk '{print $1}')
+        fi
+    fi
+    
     printf "GPU:\n"
-    [[ $GPU_NVIDIA -eq 1 ]] && printf "  [OK] %s\n" "${GPU_NAME:-NVIDIA}" || printf "  [INFO] Não detectada\n"
-    [[ $DRIVER_NVIDIA -eq 1 ]] && printf "  [OK] Driver NVIDIA %s\n" "${DRIVER_VERSION:-?}" || printf "  [AVISO] Driver não configurado\n"
+    [[ $gpu_nvidia -eq 1 ]] && printf "  [OK] %s\n" "$gpu_name" || printf "  [INFO] Não detectada\n"
+    [[ $driver_nvidia -eq 1 ]] && printf "  [OK] Driver NVIDIA %s\n" "$driver_version" || printf "  [AVISO] Driver não configurado\n"
+    
+    # Verifica Vulkan no momento
+    local vulkan_ok=0
+    if has_cmd vulkaninfo; then
+        local vk_test
+        vk_test=$(vulkaninfo --summary 2>&1)
+        if [[ $? -eq 0 ]] && echo "$vk_test" | grep -qi "device_name"; then
+            vulkan_ok=1
+        fi
+    fi
     
     printf "\nVulkan:\n"
-    [[ $VULKAN_SUPPORT -eq 1 ]] && printf "  [OK] Funcionando\n" || printf "  [AVISO] Não configurado\n"
+    [[ $vulkan_ok -eq 1 ]] && printf "  [OK] Funcionando\n" || printf "  [AVISO] Não configurado\n"
+    
+    # Verifica 32-bit no momento
+    local i386_ok=0
+    if dpkg --print-foreign-architectures 2>/dev/null | grep -qx i386; then
+        if apt-cache policy libc6:i386 2>/dev/null | grep -q "Candidate:"; then
+            i386_ok=1
+        fi
+    fi
     
     printf "\n32-bit:\n"
-    [[ $THIRTYTWO_BIT -eq 1 ]] && printf "  [OK] i386 habilitado\n" || printf "  [AVISO] Não habilitado\n"
+    [[ $i386_ok -eq 1 ]] && printf "  [OK] i386 habilitado\n" || printf "  [AVISO] Não habilitado\n"
     
     printf "\nGaming:\n"
-    [[ $STEAM_INSTALLED -eq 1 ]] && printf "  [OK] Steam\n" || printf "  [INFO] Steam não instalado\n"
-    [[ $LUTRIS_INSTALLED -eq 1 ]] && printf "  [OK] Lutris\n" || printf "  [INFO] Lutris não instalado\n"
-    [[ $WINE_INSTALLED -eq 1 ]] && printf "  [OK] Wine\n" || printf "  [INFO] Wine não instalado\n"
-    [[ $WINETRICKS_INSTALLED -eq 1 ]] && printf "  [OK] Winetricks\n" || printf "  [INFO] Winetricks não instalado\n"
-    [[ $GAMEMODE_INSTALLED -eq 1 ]] && printf "  [OK] GameMode\n" || printf "  [INFO] GameMode não instalado\n"
-    [[ $MANGOHUD_INSTALLED -eq 1 ]] && printf "  [OK] MangoHUD\n" || printf "  [INFO] MangoHUD não instalado\n"
+    has_cmd steam && printf "  [OK] Steam\n" || printf "  [INFO] Steam não instalado\n"
+    (has_cmd lutris || flatpak list --system --columns=application 2>/dev/null | grep -q lutris) && printf "  [OK] Lutris\n" || printf "  [INFO] Lutris não instalado\n"
+    has_cmd wine && printf "  [OK] Wine\n" || printf "  [INFO] Wine não instalado\n"
+    has_cmd winetricks && printf "  [OK] Winetricks\n" || printf "  [INFO] Winetricks não instalado\n"
+    has_cmd gamemoded && printf "  [OK] GameMode\n" || printf "  [INFO] GameMode não instalado\n"
+    has_cmd mangohud && printf "  [OK] MangoHUD\n" || printf "  [INFO] MangoHUD não instalado\n"
     
     printf "\n-----------------------------------------\n"
     [[ $ERRORS -gt 0 ]] && msg_error "Erros detectados: $ERRORS"
@@ -1091,11 +1187,11 @@ summary() {
     
     printf "\nLog completo:\n  %s\n" "$LOG_FILE"
     printf "\nPróximos passos:\n"
-    [[ $DRIVER_NVIDIA -eq 1 ]] && printf "  • REINICIE o sistema para ativar driver NVIDIA\n"
-    [[ $STEAM_INSTALLED -eq 1 ]] && printf "  • Abra Steam e ative Steam Play (Proton) nas configurações\n"
-    [[ $LUTRIS_INSTALLED -eq 1 ]] && printf "  • Abra Lutris e configure runners Wine se necessário\n"
-    [[ $GAMEMODE_INSTALLED -eq 1 ]] && printf "  • Use 'gamemoderun ./jogo' ou adicione 'gamemoderun %%command%%' nas opções de lançamento do Steam\n"
-    [[ $MANGOHUD_INSTALLED -eq 1 ]] && printf "  • Use 'MANGOHUD=1 comando' ou habilite no Lutris/Steam\n"
+    [[ $driver_nvidia -eq 1 ]] && printf "  • REINICIE o sistema para ativar driver NVIDIA\n"
+    has_cmd steam && printf "  • Abra Steam e ative Steam Play (Proton) nas configurações\n"
+    (has_cmd lutris || flatpak list --system --columns=application 2>/dev/null | grep -q lutris) && printf "  • Abra Lutris e configure runners Wine se necessário\n"
+    has_cmd gamemoded && printf "  • Use 'gamemoderun ./jogo' ou adicione 'gamemoderun %%command%%' nas opções de lançamento do Steam\n"
+    has_cmd mangohud && printf "  • Use 'MANGOHUD=1 comando' ou habilite no Lutris/Steam\n"
 }
 
 #===============================================================================
