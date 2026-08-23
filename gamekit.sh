@@ -587,7 +587,7 @@ install_lutris() {
     banner "Lutris"
     
     # Verifica se já instalado (apt ou flatpak user/system)
-    if has_cmd lutris || flatpak list --user --columns=application 2>/dev/null | grep -q lutris || flatpak list --system --columns=application 2>/dev/null | grep -q lutris; then
+    if has_cmd lutris || flatpak list --columns=application 2>/dev/null | grep -q lutris; then
         msg_ok "Lutris já instalado."
         LUTRIS_INSTALLED=1
         return 0
@@ -603,23 +603,12 @@ install_lutris() {
     fi
     
     if has_cmd flatpak; then
-        # Garante Flathub (user installation)
-        run_logged "Adicionando Flathub (user)" flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+        # Garante Flathub
+        run_logged "Adicionando Flathub" flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
         
-        # Instala conforme documentação oficial: flatpak install flathub --user -y net.lutris.Lutris
-        if run_logged "Instalando net.lutris.Lutris via Flatpak (user)" flatpak install -y --user flathub net.lutris.Lutris; then
-            if flatpak list --user --columns=application 2>/dev/null | grep -q lutris; then
-                installed=1
-            fi
-        fi
-    fi
-    
-    # Fallback: instalação system-wide se user falhou
-    if [[ $installed -eq 0 && -n "$(has_cmd flatpak)" ]]; then
-        msg_info "Instalação user falhou, tentando system-wide..."
-        run_logged "Adicionando Flathub (system)" flatpak remote-add --if-not-exists --system flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-        if run_logged "Instalando net.lutris.Lutris via Flatpak (system)" flatpak install -y --system flathub net.lutris.Lutris; then
-            if flatpak list --system --columns=application 2>/dev/null | grep -q lutris; then
+        # Comando conforme documentação: flatpak install flathub net.lutris.Lutris
+        if run_logged "Instalando net.lutris.Lutris via Flatpak" flatpak install flathub net.lutris.Lutris; then
+            if flatpak list --columns=application 2>/dev/null | grep -q lutris; then
                 installed=1
             fi
         fi
@@ -649,7 +638,7 @@ install_lutris() {
     fi
     
     msg_error "Não foi possível instalar Lutris (Flatpak e PPA falharam)."
-    msg_info "Tente manualmente: flatpak install flathub --user -y net.lutris.Lutris"
+    msg_info "Tente manualmente: flatpak install flathub net.lutris.Lutris"
     return 1
 }
 
@@ -941,7 +930,7 @@ system_diagnostics() {
     fi
     
     printf "\nLutris:\n"
-    if has_cmd lutris || flatpak list --system --columns=application 2>/dev/null | grep -q lutris; then
+    if has_cmd lutris || flatpak list --columns=application 2>/dev/null | grep -q lutris; then
         printf "  [OK] Instalado\n"
     else
         printf "  [NÃO INSTALADO]\n"
@@ -1116,7 +1105,7 @@ summary() {
     
     printf "\nGaming:\n"
     has_cmd steam && printf "  [OK] Steam\n" || printf "  [INFO] Steam não instalado\n"
-    (has_cmd lutris || flatpak list --system --columns=application 2>/dev/null | grep -q lutris) && printf "  [OK] Lutris\n" || printf "  [INFO] Lutris não instalado\n"
+    (has_cmd lutris || flatpak list --columns=application 2>/dev/null | grep -q lutris) && printf "  [OK] Lutris\n" || printf "  [INFO] Lutris não instalado\n"
     has_cmd wine && printf "  [OK] Wine\n" || printf "  [INFO] Wine não instalado\n"
     has_cmd winetricks && printf "  [OK] Winetricks\n" || printf "  [INFO] Winetricks não instalado\n"
     
@@ -1128,7 +1117,7 @@ summary() {
     printf "\nPróximos passos:\n"
     [[ $driver_nvidia -eq 1 ]] && printf "  • REINICIE o sistema para ativar driver NVIDIA\n"
     has_cmd steam && printf "  • Abra Steam e ative Steam Play (Proton) nas configurações\n"
-    (has_cmd lutris || flatpak list --system --columns=application 2>/dev/null | grep -q lutris) && printf "  • Abra Lutris e configure runners Wine se necessário\n"
+    (has_cmd lutris || flatpak list --columns=application 2>/dev/null | grep -q lutris) && printf "  • Abra Lutris e configure runners Wine se necessário\n"
 }
 
 #===============================================================================
