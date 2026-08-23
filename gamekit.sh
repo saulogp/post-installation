@@ -588,8 +588,8 @@ configure_proton() {
 install_lutris() {
     banner "Lutris"
     
-    # Verifica se já instalado (apt ou flatpak)
-    if has_cmd lutris || flatpak list --system --columns=application 2>/dev/null | grep -q lutris; then
+    # Verifica se já instalado (apt ou flatpak user/system)
+    if has_cmd lutris || flatpak list --user --columns=application 2>/dev/null | grep -q lutris || flatpak list --system --columns=application 2>/dev/null | grep -q lutris; then
         msg_ok "Lutris já instalado."
         LUTRIS_INSTALLED=1
         return 0
@@ -597,26 +597,37 @@ install_lutris() {
     
     local installed=0
     
-    # Método recomendado: Flatpak (funciona em 22.04 e 24.04)
-    msg_info "Instalando Lutris via Flatpak (recomendado)..."
+    # Método oficial recomendado: Flatpak user (conforme https://lutris.net/downloads)
+    msg_info "Instalando Lutris via Flatpak (método oficial)..."
     
     if ! has_cmd flatpak; then
         run_logged "Instalando Flatpak" sudo apt-get install -y flatpak
     fi
     
     if has_cmd flatpak; then
-        # Garante Flathub
-        run_logged "Adicionando Flathub" flatpak remote-add --if-not-exists --system flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+        # Garante Flathub (user installation)
+        run_logged "Adicionando Flathub (user)" flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo
         
-        # ID atual do Lutris no Flathub
-        if run_logged "Instalando net.lutris.Lutris via Flatpak" flatpak install -y --system flathub net.lutris.Lutris; then
+        # Instala conforme documentação oficial: flatpak install flathub --user -y net.lutris.Lutris
+        if run_logged "Instalando net.lutris.Lutris via Flatpak (user)" flatpak install -y --user flathub net.lutris.Lutris; then
+            if flatpak list --user --columns=application 2>/dev/null | grep -q lutris; then
+                installed=1
+            fi
+        fi
+    fi
+    
+    # Fallback: instalação system-wide se user falhou
+    if [[ $installed -eq 0 && -n "$(has_cmd flatpak)" ]]; then
+        msg_info "Instalação user falhou, tentando system-wide..."
+        run_logged "Adicionando Flathub (system)" flatpak remote-add --if-not-exists --system flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+        if run_logged "Instalando net.lutris.Lutris via Flatpak (system)" flatpak install -y --system flathub net.lutris.Lutris; then
             if flatpak list --system --columns=application 2>/dev/null | grep -q lutris; then
                 installed=1
             fi
         fi
     fi
     
-    # Fallback: PPA (apenas Ubuntu 22.04, se flatpak falhou)
+    # Fallback: PPA apenas Ubuntu 22.04 (se flatpak falhou completamente)
     if [[ $installed -eq 0 && "$UBUNTU_VERSION" == "22" ]]; then
         msg_warn "Flatpak falhou. Tentando PPA lutris/lutris (apenas Ubuntu 22.04)..."
         if run_logged "Adicionando PPA lutris/lutris" sudo add-apt-repository -y ppa:lutris/lutris; then
@@ -640,7 +651,7 @@ install_lutris() {
     fi
     
     msg_error "Não foi possível instalar Lutris (Flatpak e PPA falharam)."
-    msg_info "Tente manualmente: flatpak install flathub net.lutris.Lutris"
+    msg_info "Tente manualmente: flatpak install flathub --user -y net.lutris.Lutris"
     return 1
 }
 
